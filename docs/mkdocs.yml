@@ -3,6 +3,8 @@ repo_url: https://github.com/CodeGraphContext/CodeGraphContext
 repo_name: CodeGraphContext/CodeGraphContext
 theme:
   name: material
+  logo: images/logo.png
+  favicon: images/favicon.png
   features:
     - navigation.tabs
     - navigation.sections
@@ -28,6 +30,7 @@ nav:
   - Getting Started:
     - Prerequisites & Context: getting-started/prerequisites.md
     - Installation: getting-started/installation.md
+    - MCP Setup Wizard: getting-started/mcp-setup.md
     - Quickstart (5 min): getting-started/quickstart.md
   - Usage:
     - "Real-World Scenarios (ROI)": use_cases_detailed.md

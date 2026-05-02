@@ -4,17 +4,30 @@ The Model Context Protocol (MCP) allows AI coding assistants to talk directly to
 
 ## 1. Run the MCP Setup Wizard
 
-We provide an interactive tool to configure your editors automatically.
+We provide a "smart" interactive tool to configure your editors automatically. This is the recommended way to get started.
 
-```bash
-cgc mcp setup
-```
+=== "uvx (Smarter & Recommended)"
+    Run this command to setup CGC without even installing it:
+    ```bash
+    uvx codegraphcontext mcp setup
+    ```
+
+=== "CLI"
+    If you have already installed `codegraphcontext`, run:
+    ```bash
+    cgc mcp setup
+    ```
 
 **What happens here:**
 
-1.  The tool looks for configuration files (e.g., `~/Library/Application Support/Cursor/User/globalStorage/mcp.json`).
+1.  The tool looks for configuration files (see paths below).
 2.  It injects the `CodeGraphContext` server details.
 3.  It ensures the server knows how to find your database.
+
+**Configuration Paths:**
+*   **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
+*   **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
+*   **Linux:** `~/.config/Claude/claude_desktop_config.json`
 
 ## 2. Supported Clients
 
@@ -23,7 +36,7 @@ cgc mcp setup
 | **Cursor** | Automatic | Requires "MCP" feature enabled in settings. |
 | **Claude Desktop** | Automatic | Works with the Claude 3.5 Sonnet model. |
 | **VS Code** | Semi-Automatic | Requires the **"Continue"** extension or similar MCP client. |
-| **OpenCode** | Manual | Add a stdio MCP server with command `cgc` and args `mcp`, `start`; mirror the same env vars as your CLI (`DEFAULT_DATABASE`, Neo4j, Kùzu, etc.). See the [OpenCode MCP servers guide](https://opencode.ai/docs/ko/mcp-servers/#_top). |
+| **OpenCode** | Manual | Add a stdio MCP server with command `cgc` and args `mcp`, `start`; mirror the same env vars as your CLI (`DEFAULT_DATABASE`, Neo4j, LadybugDB, etc.). See the [OpenCode MCP servers guide](https://opencode.ai/docs/ko/mcp-servers/#_top). |
 
 ## 3. How to Use It (Once Connected)
 
@@ -38,5 +51,5 @@ Open your AI Chat and talk naturally. The AI now has a "tool" it can call.
 ## 4. Troubleshooting
 
 *   **"Component not found":** This usually means the MCP server didn't start. Check the logs in your AI editor.
-*   **"Database error":** Embedded backends (**FalkorDB Lite**, **KuzuDB**) need **no external database setup**—if you use them, the problem is usually config, disk, or Python environment. If you use **Neo4j**, ensure the container or server is running (`docker ps` / service status) and credentials match your config (**`DEFAULT_DATABASE`** and related env vars).
+*   **"Database error":** Embedded backends (**FalkorDB Lite**, **LadybugDB**) need **no external database setup**—if you use them, the problem is usually config, disk, or Python environment. If you use **Neo4j**, ensure the container or server is running (`docker ps` / service status) and credentials match your config (**`DEFAULT_DATABASE`** and related env vars).
 *   **Diagnostics:** Run **`cgc doctor`** for a quick health check of your install, backend, and common configuration issues.

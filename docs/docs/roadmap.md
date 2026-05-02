@@ -7,7 +7,7 @@ CodeGraphContext is an evolving tool. We believe in transparency about where we 
 These capabilities are live in version **0.4.5**.
 
 - **Languages (19):** Python, JavaScript, TypeScript, TSX, Go, Rust, C, C++, Java, Ruby, C#, PHP, Kotlin, Scala, Swift, Dart, Perl, Haskell, and Elixir.
-- **Database backends (4):** FalkorDB Lite (default on Unix with Python 3.12+), FalkorDB Remote, KuzuDB (Windows and embedded fallback), and Neo4j.
+- **Database backends (4):** FalkorDB Lite (default on Unix with Python 3.12+), FalkorDB Remote, LadybugDB (Windows and embedded fallback), and Neo4j.
 - **MCP server:** 20 tools for Cursor, Claude Desktop, Windsurf, VS Code, and other MCP clients (`cgc mcp start`).
 - **Live watching:** Real-time updates via `cgc watch`.
 - **Bundles and registry (shipped):** Export/import graphs and use the public bundle registry from the CLI and website.

@@ -154,9 +154,9 @@ Each language parser extracts functions, classes, methods, parameters, inheritan
 
 CodeGraphContext supports multiple graph database backends to suit your environment:
 
-| Feature | KùzuDB | FalkorDB Lite | Neo4j |
+| Feature | LadybugDB | FalkorDB Lite | Neo4j |
 | :--- | :--- | :--- | :--- |
-| **Typical default** | **Windows** (embedded, when `kuzu` is installed) | **Unix** (Python 3.12+, when `falkordblite` works) | When explicitly configured |
+| **Typical default** | **Windows & All Fallbacks** (embedded, when `real_ladybug` is installed) | **Unix** (Python 3.12+, when `falkordblite` works) | When explicitly configured |
 | **Setup** | Zero-config / Embedded | Zero-config / In-process | Docker / External |
 | **Platform** | **All (Windows Native, macOS, Linux)** | Unix-only (Linux/macOS/WSL) | All Platforms |
 | **Use Case** | Desktop, IDE, Local development | Specialized Unix development | Enterprise, Massive graphs |
@@ -201,7 +201,11 @@ _If you’re using CodeGraphContext in your project, feel free to open a PR and 
 
 ## Quick Start
 ### Install the core toolkit
-```
+```bash
+# Recommended: Run instantly without installation
+uvx codegraphcontext --help
+
+# OR install via pip
 pip install codegraphcontext
 ```
 
@@ -271,8 +275,8 @@ Use CodeGraphContext as an **MCP server** for AI assistants:
 
 2.  **Database Setup (Automatic)**
     
-    - **KùzuDB (default on Windows):** Runs natively on Windows, macOS, and Linux. On Windows it is the usual embedded choice; `pip install real_ladybug` if needed.
-    - **FalkorDB Lite (typical default on Unix):** When Python 3.12+ and `falkordblite` are available on Unix/macOS/WSL, the embedded backend prefers FalkorDB Lite; otherwise KùzuDB is used.
+    - **LadybugDB (default fallback):** Runs natively on Windows, macOS, and Linux. On Windows it is the usual embedded choice; `pip install real_ladybug` if needed.
+    - **FalkorDB Lite (preferred on Unix):** When Python 3.12+ and `falkordblite` are available on Unix/macOS/WSL, the embedded backend prefers FalkorDB Lite; otherwise LadybugDB is used.
     - **Neo4j (Alternative):** To use Neo4j instead, or if you prefer a server-based approach, run: `cgc neo4j setup`
 
 ---

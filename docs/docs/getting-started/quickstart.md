@@ -22,7 +22,7 @@ __pycache__/
 
 ## 2. Index the Codebase
 
-Run the following command to parse the codebase and store it in your local graph database (KùzuDB by default).
+Run the following command to parse the codebase and store it in your local graph database (LadybugDB by default).
 
 ```bash
 cgc index .
@@ -85,7 +85,7 @@ If you are actively developing and want the graph to stay up to date without man
 cgc watch .
 ```
 
-*This spins up a background process. Whenever a `.py` or `.ts` file changes, CGC instantly re-parses just that file and updates the exact nodes in KùzuDB.*
+*This spins up a background process. Whenever a `.py` or `.ts` file changes, CGC instantly re-parses just that file and updates the exact nodes in LadybugDB.*
 
 ## 6. Visualizing the Graph
 
