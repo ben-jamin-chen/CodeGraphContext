@@ -70,7 +70,7 @@ class KuzuDBManager:
         if self._conn is None:
             with self._lock:
                 if self._conn is None:
-                    import real_ladybug as kuzu
+                    import kuzu
                     max_retries = 5
                     for attempt in range(max_retries):
                         try:
@@ -217,7 +217,7 @@ class KuzuDBManager:
     @staticmethod
     def test_connection(db_path: str = None) -> Tuple[bool, Optional[str]]:
         try:
-            import real_ladybug as kuzu
+            import kuzu
             return True, None
         except ImportError:
             return False, "KùzuDB is not installed. Run 'pip install real_ladybug'"
