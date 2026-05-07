@@ -355,12 +355,12 @@ class JavaTreeSitterParser:
                             "path": str(path),
                             "lang": self.language_name,
                             "context": context_name,
-                            "class_context": context_name if context_type and "class" in context_type else None
+                            "class_context": context_name if context_type in ("class_declaration", "interface_declaration", "enum_declaration", "annotation_type_declaration") else None
                         }
 
                         if package_name:
                             func_data["package_name"] = package_name
-                            class_ctx = context_name if (context_type and "class" in context_type) else None
+                            class_ctx = context_name if context_type in ("class_declaration", "interface_declaration", "enum_declaration", "annotation_type_declaration") else None
                             if class_ctx:
                                 func_data["qualified_name"] = f"{package_name}.{class_ctx}.{func_name}"
                             else:
@@ -541,7 +541,7 @@ class JavaTreeSitterParser:
                         "path": str(path),
                         "lang": self.language_name,
                         "context": ctx_name,
-                        "class_context": ctx_name if ctx_type and "class" in ctx_type else None
+                        "class_context": ctx_name if ctx_type in ("class_declaration", "interface_declaration", "enum_declaration", "annotation_type_declaration") else None
                      })
 
         return variables
@@ -616,9 +616,12 @@ class JavaTreeSitterParser:
                         })
 
                 elif "Table" in ann_map and "Entity" not in ann_map:
-                    # Could be Spring Data Cassandra @Table(value="...")
+                    # Could be Spring Data Cassandra @Table(keyspace="...", name="...") or @Table(value="...")
                     t_args = ann_map["Table"] or ""
-                    m = re.search(r'value\s*=\s*"([^"]+)"', t_args)
+                    # Prefer explicit name= attribute (Cassandra uses keyspace+name; name= is the table)
+                    m = re.search(r'\bname\s*=\s*"([^"]+)"', t_args)
+                    if not m:
+                        m = re.search(r'value\s*=\s*"([^"]+)"', t_args)
                     if not m:
                         m = re.search(r'"([^"]+)"', t_args)
                     table_name = m.group(1) if m else (class_name.lower() if class_name else None)
@@ -919,7 +922,7 @@ class JavaTreeSitterParser:
                         "args": args,
                         "inferred_obj_type": inferred_obj_type,
                         "context": (ctx_name, ctx_type, ctx_line),
-                        "class_context": (ctx_name, ctx_line) if ctx_type and "class" in ctx_type else (None, None),
+                        "class_context": (ctx_name, ctx_line) if ctx_type in ("class_declaration", "interface_declaration", "enum_declaration", "annotation_type_declaration") else (None, None),
                         "lang": self.language_name,
                         "is_dependency": False,
                     }
