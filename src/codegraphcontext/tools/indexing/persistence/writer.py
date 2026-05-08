@@ -450,7 +450,7 @@ class GraphWriter:
                 file_path=file_path_str,
             )
 
-            def write_function_call_groups(
+    def write_function_call_groups(
         self,
         resolved_calls: List[Dict],
     ) -> None:
@@ -951,6 +951,7 @@ class GraphWriter:
                     MATCH (c:Class {name: m.class_name, path: m.class_path})
                     MERGE (tbl:DbTable {name: m.orm_table})
                     ON CREATE SET tbl.fqn = m.orm_table, tbl.datasource_name = m.datastore
+                    ON MATCH SET tbl.datasource_name = COALESCE(tbl.datasource_name, m.datastore)
                     MERGE (c)-[:MAPS_TO {datastore: m.datastore, line_number: m.line_number}]->(tbl)
                     """,
                     batch=class_table[i : i + batch_size],
