@@ -34,6 +34,53 @@ def _confidence_label(tier: int, is_unresolved_external: bool) -> str:
     return "INFERRED"
 
 
+_SUFFIX_TO_LANG = {
+    ".java": "java",
+    ".py": "python", ".ipynb": "python",
+    ".js": "javascript", ".jsx": "javascript", ".mjs": "javascript", ".cjs": "javascript",
+    ".ts": "typescript", ".tsx": "typescript",
+    ".go": "go",
+    ".rs": "rust",
+    ".cpp": "cpp", ".hpp": "cpp", ".hh": "cpp",
+    ".c": "c", ".h": "c",
+    ".cs": "c_sharp",
+    ".kt": "kotlin",
+    ".scala": "scala", ".sc": "scala",
+    ".rb": "ruby",
+    ".swift": "swift",
+    ".php": "php",
+    ".dart": "dart",
+    ".pl": "perl", ".pm": "perl",
+    ".lua": "lua",
+    ".hs": "haskell",
+    ".ex": "elixir", ".exs": "elixir"
+}
+
+def detect_lang_from_path(path: str) -> Optional[str]:
+    if not path:
+        return None
+    return _SUFFIX_TO_LANG.get(Path(path).suffix.lower())
+
+def languages_are_compatible(lang1: Optional[str], lang2: Optional[str]) -> bool:
+    if not lang1 or not lang2:
+        return True
+    lang1 = lang1.lower()
+    lang2 = lang2.lower()
+    if lang1 == lang2:
+        return True
+    jvm = {"java", "kotlin"}
+    if lang1 in jvm and lang2 in jvm:
+        return True
+    c_cpp = {"c", "cpp"}
+    if lang1 in c_cpp and lang2 in c_cpp:
+        return True
+    js_ts = {"javascript", "typescript"}
+    if lang1 in js_ts and lang2 in js_ts:
+        return True
+    return False
+
+
+
 def resolve_function_call(
     call: Dict[str, Any],
     caller_file_path: str,
@@ -54,6 +101,7 @@ def resolve_function_call(
     diagnostics: Optional[List[Dict[str, Any]]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Resolve a single function call to its target. Returns call params dict or None if skipped."""
+    caller_lang = detect_lang_from_path(caller_file_path)
     called_name = call["name"]
     if called_name in __builtins__:
         return None
@@ -741,13 +789,19 @@ def resolve_function_call(
             visited.add(current)
 
             method_candidates = class_method_index.get((current, method_name), [])
+            method_candidates = [
+                cand for cand in method_candidates
+                if languages_are_compatible(caller_lang, cand.get("lang"))
+            ]
             if method_candidates:
-                method_candidates_by_hierarchy.extend(
-                    filter_method_candidates_by_call_owner(
-                        method_candidates,
-                        current,
-                    )
+                filtered_candidates = filter_method_candidates_by_call_owner(
+                    method_candidates,
+                    current,
                 )
+                for cand in filtered_candidates:
+                    cand_arity = function_arg_count(cand)
+                    if cand_arity is None or not any(function_arg_count(existing) == cand_arity for existing in method_candidates_by_hierarchy):
+                        method_candidates_by_hierarchy.append(cand)
 
             if not fallback_method_owner_path and method_name in class_method_names.get(current, set()):
                 method_owner_path = first_import_path(current)
@@ -756,8 +810,15 @@ def resolve_function_call(
                     fallback_method_context = simple_type_key(current)
 
             extension_candidates = extension_method_index.get((current, method_name), [])
+            extension_candidates = [
+                cand for cand in extension_candidates
+                if languages_are_compatible(caller_lang, cand.get("lang"))
+            ]
             if extension_candidates:
-                extension_candidates_by_hierarchy.extend(extension_candidates)
+                for cand in extension_candidates:
+                    cand_arity = function_arg_count(cand)
+                    if cand_arity is None or not any(function_arg_count(existing) == cand_arity for existing in extension_candidates_by_hierarchy):
+                        extension_candidates_by_hierarchy.append(cand)
 
             for base_name in global_class_bases.get(current, []):
                 base_type = canonical_type(base_name)
@@ -893,12 +954,13 @@ def resolve_function_call(
             if matching_receiver_type:
                 member_receiver_type = canonical_type(matching_receiver_type)
 
-    if extension_receiver_type:
+    receiver_type = extension_receiver_type or call.get("inferred_obj_type")
+    if receiver_type:
         (
             resolved_path,
             resolved_called_line_number,
             resolved_called_context,
-        ) = method_target_for_type(extension_receiver_type, called_name)
+        ) = method_target_for_type(receiver_type, called_name)
         if resolved_path:
             resolution_tier = 4
         else:
