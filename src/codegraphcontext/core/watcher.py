@@ -5,6 +5,7 @@ It observes directories for changes and triggers updates to the code graph.
 
 import os
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import typing
 
@@ -49,6 +50,16 @@ class RepositoryEventHandler(FileSystemEventHandler):
         self.repo_path = repo_path.resolve()
         self.debounce_interval = debounce_interval
         self.timers = {}
+        # Bounded executor for handling debounced file-change events. Without this,
+        # a burst of N events (e.g., git pull, branch switch) spawns N concurrent
+        # Timer threads, each opening its own DB session and overwhelming the
+        # Neo4j driver pool (ConnectionAcquisitionTimeoutError after 60s).
+        # Tunable via WATCHER_MAX_WORKERS in ~/.codegraphcontext/.env.
+        max_workers = int(get_config_value("WATCHER_MAX_WORKERS") or 8)
+        self._executor = ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix="cgc-watcher-worker",
+        )
 
         self.ignore_root = self.repo_path
         self.ignore_spec = ignore_spec
@@ -182,7 +193,14 @@ class RepositoryEventHandler(FileSystemEventHandler):
     def _debounce(self, event_path, action):
         if event_path in self.timers:
             self.timers[event_path].cancel()
-        t = threading.Timer(self.debounce_interval, action)
+        # Create and start a new timer. After the debounce interval the Timer
+        # thread hands the action off to the bounded executor and exits, so the
+        # heavy DB work runs in a fixed-size pool rather than in N Timer threads
+        # on bursts of N events.
+        t = threading.Timer(
+            self.debounce_interval,
+            lambda: self._executor.submit(action),
+        )
         t.start()
         self.timers[event_path] = t
 
