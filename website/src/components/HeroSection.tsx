@@ -118,6 +118,14 @@ const HeroSection = () => {
                 </Badge>
               </div>
 
+              <div className="flex items-center gap-3 mb-3 select-none">
+                <img
+                  src="/cgcIcon.png"
+                  className="w-16 h-16 drop-shadow-[0_0_15px_rgba(168,85,247,0.55)] animate-float"
+                  alt="CodeGraphContext Logo"
+                />
+              </div>
+
               <h1 className="text-4xl sm:text-5xl lg:text-7xl font-bold mb-6 bg-gradient-to-r from-purple-700 via-indigo-700 to-purple-900 dark:bg-gradient-primary bg-clip-text py-2 text-transparent leading-tight tracking-tight drop-shadow-[0_2px_8px_rgba(0,0,0,0.15)]">
                 CodeGraphContext
               </h1>

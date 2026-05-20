@@ -411,8 +411,8 @@ export default function LocalUploader({ onComplete }: { onComplete: (data: unkno
 
           {activeTab === 'cgc' && (
             <motion.div key="cgc" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="flex flex-col items-center w-full">
-              <div className="bg-gradient-to-br from-emerald-500/20 to-teal-500/20 p-5 rounded-full mb-6 border border-emerald-500/30">
-                <FileArchive className="w-10 h-10 text-emerald-400" />
+              <div className="bg-gradient-to-br from-emerald-500/10 to-teal-500/10 p-4 rounded-full mb-6 border border-emerald-500/20">
+                <img src="/cgcIcon.png" alt="CGC Bundle Logo" className="w-12 h-12 shrink-0 drop-shadow-[0_0_8px_rgba(16,185,129,0.4)] animate-float" style={{ animationDuration: '3s' }} />
               </div>
               <h3 className="text-2xl font-bold mb-2 text-white">Upload CGC Bundle</h3>
               <p className="text-gray-400 text-sm mb-8 max-w-[250px]">Drop a .cgc pre-indexed bundle file. Loaded instantly in-memory.</p>

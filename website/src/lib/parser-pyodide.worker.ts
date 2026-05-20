@@ -6,7 +6,20 @@ import treeSitterWasmUrl from "web-tree-sitter/tree-sitter.wasm?url";
 let parser: any = null;
 let initPromise: Promise<void> | null = null;
 let pyodideInstance: any = null;
+let pyodidePromise: Promise<any> | null = null;
 const wasmLanguageCache = new Map<string, any>();
+
+async function startPyodideLoad() {
+  if (pyodidePromise) return pyodidePromise;
+  pyodidePromise = (async () => {
+    const pyodideModule: any = await import(/* @vite-ignore */ "https://cdn.jsdelivr.net/pyodide/v0.25.0/full/pyodide.mjs");
+    const instance = await pyodideModule.loadPyodide({
+      indexURL: "https://cdn.jsdelivr.net/pyodide/v0.25.0/full/"
+    });
+    return instance;
+  })();
+  return pyodidePromise;
+}
 
 async function initParser() {
   if (parser) return;
@@ -26,8 +39,27 @@ async function initParser() {
   await initPromise;
 }
 
-async function getLanguageForFile(path: string) {
+async function getLanguageForWasmName(wasmName: string) {
   if (!parser) await initParser();
+  if (!wasmName) return null;
+
+  if (wasmLanguageCache.has(wasmName)) {
+    return wasmLanguageCache.get(wasmName);
+  }
+
+  try {
+    const response = await fetch(`${location.origin}/wasm/${wasmName}`);
+    if (!response.ok) return null;
+    const buffer = await response.arrayBuffer();
+    const lang = await Language.load(new Uint8Array(buffer));
+    wasmLanguageCache.set(wasmName, lang);
+    return lang;
+  } catch (err) {
+    return null;
+  }
+}
+
+async function getLanguageForFile(path: string) {
   const extMatch = path.match(/\.([a-zA-Z0-9]+)$/);
   if (!extMatch) return null;
   const ext = extMatch[1].toLowerCase();
@@ -59,20 +91,7 @@ async function getLanguageForFile(path: string) {
     default: return null;
   }
 
-  if (wasmLanguageCache.has(wasmName)) {
-    return wasmLanguageCache.get(wasmName);
-  }
-
-  try {
-    const response = await fetch(`${location.origin}/wasm/${wasmName}`);
-    if (!response.ok) return null;
-    const buffer = await response.arrayBuffer();
-    const lang = await Language.load(new Uint8Array(buffer));
-    wasmLanguageCache.set(wasmName, lang);
-    return lang;
-  } catch (err) {
-    return null;
-  }
+  return getLanguageForWasmName(wasmName);
 }
 
 // Custom language parser query strings
@@ -431,7 +450,56 @@ self.onmessage = async (e: MessageEvent) => {
     indexOptions = e.data.options || {};
     try {
       self.postMessage({ type: 'PROGRESS', payload: { msg: "Initializing WASM Tree-sitter...", percent: 10 } });
+      
+      // Start Pyodide load in background immediately
+      startPyodideLoad().catch(err => {
+        console.warn("Background Pyodide load failed (will retry):", err);
+      });
+
       await initParser();
+
+      // Identify unique languages/WASMs needed by the queued files
+      const uniqueWasmNames = new Set<string>();
+      for (const f of pendingFileQueue) {
+        const extMatch = f.path.match(/\.([a-zA-Z0-9]+)$/);
+        if (extMatch) {
+          const ext = extMatch[1].toLowerCase();
+          let wasmName = '';
+          switch (ext) {
+            case 'py': wasmName = 'tree-sitter-python.wasm'; break;
+            case 'js':
+            case 'jsx': wasmName = 'tree-sitter-javascript.wasm'; break;
+            case 'ts':
+            case 'tsx': wasmName = 'tree-sitter-tsx.wasm'; break;
+            case 'java': wasmName = 'tree-sitter-java.wasm'; break;
+            case 'c':
+            case 'h': wasmName = 'tree-sitter-c.wasm'; break;
+            case 'cpp':
+            case 'hpp':
+            case 'cc': wasmName = 'tree-sitter-cpp.wasm'; break;
+            case 'cs': wasmName = 'tree-sitter-c_sharp.wasm'; break;
+            case 'go': wasmName = 'tree-sitter-go.wasm'; break;
+            case 'rs': wasmName = 'tree-sitter-rust.wasm'; break;
+            case 'rb': wasmName = 'tree-sitter-ruby.wasm'; break;
+            case 'php': wasmName = 'tree-sitter-php.wasm'; break;
+            case 'swift': wasmName = 'tree-sitter-swift.wasm'; break;
+            case 'kt':
+            case 'kts': wasmName = 'tree-sitter-kotlin.wasm'; break;
+            case 'dart': wasmName = 'tree-sitter-dart.wasm'; break;
+            case 'pl':
+            case 'pm': wasmName = 'tree-sitter-perl.wasm'; break;
+          }
+          if (wasmName) {
+            uniqueWasmNames.add(wasmName);
+          }
+        }
+      }
+
+      if (uniqueWasmNames.size > 0) {
+        self.postMessage({ type: 'PROGRESS', payload: { msg: `Downloading language parsers in parallel...`, percent: 12 } });
+        await Promise.all(Array.from(uniqueWasmNames).map(name => getLanguageForWasmName(name)));
+      }
+
       processNextBatch();
     } catch (err: any) {
       self.postMessage({ type: 'ERROR', payload: err.message });
@@ -460,26 +528,26 @@ async function processNextBatch() {
       });
     }
 
-    const queryKey = getLanguageQueryKey(f.path);
-    if (!queryKey) {
-      // Still index files with no parser as empty definitions to preserve tree containment
-      parsedFilesData.push({
-        path: f.path,
-        functions: [],
-        classes: [],
-        variables: [],
-        imports: [],
-        calls: [],
-        inherits: []
-      });
-      continue;
-    }
-
-    const lang = await getLanguageForFile(f.path);
-    if (!lang) continue;
-
-    parser!.setLanguage(lang);
     try {
+      const queryKey = getLanguageQueryKey(f.path);
+      if (!queryKey) {
+        // Still index files with no parser as empty definitions to preserve tree containment
+        parsedFilesData.push({
+          path: f.path,
+          functions: [],
+          classes: [],
+          variables: [],
+          imports: [],
+          calls: [],
+          inherits: []
+        });
+        continue;
+      }
+
+      const lang = await getLanguageForFile(f.path);
+      if (!lang) continue;
+
+      parser!.setLanguage(lang);
       const tree = parser!.parse(f.content);
       const root = tree.rootNode;
       const q = QUERIES[queryKey];
@@ -612,11 +680,7 @@ async function processNextBatch() {
 
 async function runPythonEngine() {
   try {
-    // Dynamic import to fetch Pyodide ESM lazily inside the ESM worker
-    const pyodideModule: any = await import(/* @vite-ignore */ "https://cdn.jsdelivr.net/pyodide/v0.25.0/full/pyodide.mjs");
-    pyodideInstance = await pyodideModule.loadPyodide({
-      indexURL: "https://cdn.jsdelivr.net/pyodide/v0.25.0/full/"
-    });
+    pyodideInstance = await startPyodideLoad();
 
     self.postMessage({ type: 'PROGRESS', payload: { msg: "Running cross-file semantic analysis...", percent: 85 } });
 
