@@ -68,18 +68,18 @@ export default async function handler(req: any, res: any) {
       }
 
       case "tools/list": {
-        // Query the default tunnel channel for the tools manifest from the active browser tab
-        // Use a default/global channel name for listing tools
         const channelName = "cgc-tunnel-global-mcp";
         const channel = supabase.channel(channelName);
         const requestId = Math.random().toString(36).substring(2, 15);
         let hasResponded = false;
+        let responsePayload: any = null;
 
         const cleanup = () => {
           try { supabase.removeChannel(channel); } catch (err) {}
         };
 
-        const responsePromise = new Promise<any>((resolve, reject) => {
+        // Step 1: Establish subscription first
+        await new Promise<void>((resolve, reject) => {
           channel
             .on(
               "broadcast",
@@ -87,18 +87,21 @@ export default async function handler(req: any, res: any) {
               ({ payload }: { payload: any }) => {
                 if (payload && payload.id === requestId) {
                   hasResponded = true;
+                  responsePayload = payload;
                   cleanup();
-                  resolve(payload);
                 }
               }
             )
             .subscribe((status: string) => {
-              if (status === "CLOSED" || status === "TIMED_OUT") {
-                reject(new Error(`Subscription closed: ${status}`));
+              if (status === "SUBSCRIBED") {
+                resolve();
+              } else if (status === "CLOSED" || status === "TIMED_OUT") {
+                reject(new Error(`Failed to connect to signaling tunnel: ${status}`));
               }
             });
         });
 
+        // Step 2: Send dynamic tools list request
         const sendStatus = await channel.send({
           type: "broadcast",
           event: "tools-list-request",
@@ -110,25 +113,21 @@ export default async function handler(req: any, res: any) {
           return res.status(200).json({
             jsonrpc: "2.0",
             id,
-            result: {
-              tools: [] // Fallback to empty if broadcast fails
-            }
+            result: { tools: [] }
           });
         }
 
-        const timeoutPromise = new Promise<any>((resolve) => {
+                // Step 3: Await response or handle offline state on timeout
+        await new Promise<void>((resolve) => {
           setTimeout(() => {
             if (!hasResponded) {
               cleanup();
-              resolve({ status: "offline" });
             }
-          }, 5000);
+            resolve();
+          }, 1200);
         });
 
-        const listResult = await Promise.race([responsePromise, timeoutPromise]);
-
-        if (listResult.status === "offline") {
-          // Provide a fallback schema to Claude explaining how to connect
+        if (!hasResponded) {
           const connectNoticeTool = {
             name: "cgc_connect_notice",
             description: "ALERT: Browser-as-a-Server dashboard is offline. Open https://codegraphcontext.vercel.app to activate full Python MCP tools.",
@@ -145,7 +144,7 @@ export default async function handler(req: any, res: any) {
           jsonrpc: "2.0",
           id,
           result: {
-            tools: listResult.tools || []
+            tools: responsePayload?.tools || []
           }
         });
       }
@@ -160,7 +159,6 @@ export default async function handler(req: any, res: any) {
           });
         }
 
-        // Extract repo from arguments to direct to the correct browser channel
         const repo = toolArgs?.repo || toolArgs?.repository || "";
         if (!repo || typeof repo !== "string") {
           return res.status(200).json({
@@ -179,17 +177,18 @@ export default async function handler(req: any, res: any) {
         const cleanRepo = repo.trim().replace(/^(https?:\/\/)?(www\.)?github\.com\//, "").replace(/\/$/, "");
         const cleanRepoName = cleanRepo.replace(/\//g, "_").toLowerCase();
         
-        // Connect to the repository-specific channel
         const channelName = `cgc-tunnel-${cleanRepoName}`;
         const channel = supabase.channel(channelName);
         const requestId = Math.random().toString(36).substring(2, 15);
         let hasResponded = false;
+        let responsePayload: any = null;
 
         const cleanup = () => {
           try { supabase.removeChannel(channel); } catch (err) {}
         };
 
-        const responsePromise = new Promise<any>((resolve, reject) => {
+        // Step 1: Establish subscription first
+        await new Promise<void>((resolve, reject) => {
           channel
             .on(
               "broadcast",
@@ -197,18 +196,21 @@ export default async function handler(req: any, res: any) {
               ({ payload }: { payload: any }) => {
                 if (payload && payload.id === requestId) {
                   hasResponded = true;
+                  responsePayload = payload;
                   cleanup();
-                  resolve(payload);
                 }
               }
             )
             .subscribe((status: string) => {
-              if (status === "CLOSED" || status === "TIMED_OUT") {
-                reject(new Error(`Subscription closed: ${status}`));
+              if (status === "SUBSCRIBED") {
+                resolve();
+              } else if (status === "CLOSED" || status === "TIMED_OUT") {
+                reject(new Error(`Failed to connect to signaling tunnel: ${status}`));
               }
             });
         });
 
+        // Step 2: Broadcast execution command
         const sendStatus = await channel.send({
           type: "broadcast",
           event: "tool-call-request",
@@ -231,18 +233,17 @@ export default async function handler(req: any, res: any) {
           });
         }
 
-        const timeoutPromise = new Promise<any>((resolve) => {
+        // Step 3: Await response or handle offline state on timeout
+        await new Promise<void>((resolve) => {
           setTimeout(() => {
             if (!hasResponded) {
               cleanup();
-              resolve({ status: "offline" });
             }
-          }, 8000);
+            resolve();
+          }, 7000);
         });
 
-        const callResult = await Promise.race([responsePromise, timeoutPromise]);
-
-        if (callResult.status === "offline") {
+        if (!hasResponded) {
           return res.status(200).json({
             jsonrpc: "2.0",
             id,
@@ -256,22 +257,21 @@ export default async function handler(req: any, res: any) {
           });
         }
 
-        if (callResult.status === "error") {
+        if (responsePayload?.status === "error") {
           return res.status(200).json({
             jsonrpc: "2.0",
             id,
             result: {
               isError: true,
-              content: [{ type: "text", text: `Python MCPServer Error: ${callResult.error}` }]
+              content: [{ type: "text", text: `Python MCPServer Error: ${responsePayload.error}` }]
             }
           });
         }
 
-        // Return the exact content structure returned by the Python MCP handler
         return res.status(200).json({
           jsonrpc: "2.0",
           id,
-          result: callResult.result
+          result: responsePayload?.result
         });
       }
 
