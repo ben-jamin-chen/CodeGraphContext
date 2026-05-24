@@ -26,6 +26,13 @@ def _is_kuzudb_available() -> bool:
     except ImportError:
         return False
 
+def _is_ladybugdb_available() -> bool:
+    """Check if LadybugDB is installed."""
+    try:
+        return importlib.util.find_spec("ladybug") is not None
+    except ImportError:
+        return False
+
 def _is_falkordb_available() -> bool:
     """Check if FalkorDB Lite is installed (Unix only)."""
     if platform.system() == "Windows":
@@ -127,8 +134,8 @@ def get_database_manager(db_path: Optional[str] = None) -> Union['DatabaseManage
             info_logger("Using Nornic DB (explicit)")
             return NornicDBManager()
         elif db_type == 'ladybugdb':
-            if not _is_kuzudb_available():
-                raise ValueError("Database set to 'ladybugdb' but LadybugDB core (kuzu) is not installed.\nRun 'pip install kuzu'")
+            if not _is_ladybugdb_available():
+                raise ValueError("Database set to 'ladybugdb' but LadybugDB is not installed.\nRun 'pip install ladybug'")
             from .database_ladybug import LadybugDBManager
             info_logger(f"Using LadybugDB (explicit) at {db_path or 'default path'}")
             return LadybugDBManager(db_path=db_path)
