@@ -73,14 +73,29 @@ class BundleRegistry:
                             full_name = asset['name'].replace('.cgc', '')
                             
                             # Parse bundle name
-                            name_parts = full_name.split('-')
+                            # Parse bundle name (expects double-underscore layout)
+                            clean_name = full_name
+                            if clean_name.startswith("cgc__"):
+                                clean_name = clean_name[5:]
+                            parts = clean_name.split('__')
+                            if len(parts) >= 2:
+                                repo_name = parts[1]
+                                repo_path = f"{parts[0]}/{parts[1]}"
+                                version = parts[2] if len(parts) > 2 else 'latest'
+                                commit = parts[3] if len(parts) > 3 else 'unknown'
+                            else:
+                                repo_name = full_name
+                                repo_path = full_name
+                                version = 'latest'
+                                commit = 'unknown'
+
                             bundle = {
-                                'name': name_parts[0],  # Base package name
+                                'name': repo_name,  # Base package name
                                 'full_name': full_name,  # Complete name with version
-                                'repo': f"{name_parts[0]}/{name_parts[0]}",  # Simplified
+                                'repo': repo_path,
                                 'bundle_name': asset['name'],
-                                'version': name_parts[1] if len(name_parts) > 1 else 'latest',
-                                'commit': name_parts[2] if len(name_parts) > 2 else 'unknown',
+                                'version': version,
+                                'commit': commit,
                                 'size_bytes': asset.get('size', 0),
                                 'size': f"{asset['size'] / 1024 / 1024:.1f}MB",
                                 'download_url': asset['browser_download_url'],
@@ -101,7 +116,11 @@ class BundleRegistry:
                 else:
                     # Extract from full_name or bundle_name
                     full_name = bundle.get('full_name', bundle.get('bundle_name', 'unknown'))
-                    bundle['name'] = full_name.split('-')[0]
+                    clean_name = full_name
+                    if clean_name.startswith("cgc__"):
+                        clean_name = clean_name[5:]
+                    parts = clean_name.split('__')
+                    bundle['name'] = parts[1] if len(parts) > 1 else parts[0]
             
             # Ensure 'full_name' exists
             if 'full_name' not in bundle:

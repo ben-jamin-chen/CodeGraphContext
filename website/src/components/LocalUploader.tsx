@@ -172,9 +172,14 @@ export default function LocalUploader({ onComplete, plain }: { onComplete: (data
       ...graphData,
       fileContents,
       metadata: {
-        repo: repoName,
-        version: "1.0.0",
-        timestamp: new Date().toISOString()
+        format_version: "1.0.0",
+        generator: "WASM",
+        exported_at: new Date().toISOString().replace(/\.\d+Z$/, 'Z'),
+        name: repoName.endsWith('.cgc') ? repoName : `${repoName}.cgc`,
+        graph_metrics: {
+          total_nodes: graphData.nodes.length,
+          total_edges: graphData.links.length
+        }
       }
     });
   };

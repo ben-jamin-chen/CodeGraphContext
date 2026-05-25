@@ -81,14 +81,27 @@ export default async function handler(req: any, res: any) {
                     const weeklyBundles = latestWeekly.assets
                         .filter((asset: any) => asset.name.endsWith('.cgc'))
                         .map((asset: any) => {
-                            const nameParts = asset.name.replace('.cgc', '').split('-');
-                            const name = nameParts[0];
-                            const version = nameParts[1] || 'latest';
-                            const commit = nameParts[2] || 'unknown';
+                            const rawName = asset.name.replace('.cgc', '');
+                            let name = '';
+                            let version = 'latest';
+                            let commit = 'unknown';
+                            let repo = '';
+
+                            const cleanName = rawName.startsWith('cgc__') ? rawName.substring(5) : rawName;
+                            const parts = cleanName.split('__');
+                            if (parts.length >= 2) {
+                                name = parts[1];
+                                repo = `${parts[0]}/${parts[1]}`;
+                                version = parts[2] || 'latest';
+                                commit = parts[3] || 'unknown';
+                            } else {
+                                name = rawName;
+                                repo = getRepoName(rawName);
+                            }
 
                             return {
                                 name,
-                                repo: getRepoName(name),
+                                repo,
                                 bundle_name: asset.name,
                                 version,
                                 commit,

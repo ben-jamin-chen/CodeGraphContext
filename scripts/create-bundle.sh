@@ -102,7 +102,7 @@ fi
 print_success "Repository indexed"
 
 # Export to bundle
-BUNDLE_NAME="${OUTPUT_NAME}-${TAG}-${COMMIT_SHORT}.cgc"
+BUNDLE_NAME="${OWNER}__${REPO_NAME}__${TAG}__${COMMIT_SHORT}.cgc"
 print_info "Exporting to bundle: $BUNDLE_NAME"
 
 if ! cgc export "$BUNDLE_NAME" --repo .; then

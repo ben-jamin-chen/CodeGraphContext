@@ -30,20 +30,22 @@ def _get_base_package_name(bundle_name: str) -> str:
     Extract base package name from full bundle name.
     
     Examples:
+        'cgc__CodeGraphContext__CodeGraphContext__main__f3766d0' -> 'CodeGraphContext'
         'python-bitcoin-utils-main-61d1969' -> 'python-bitcoin-utils'
         'flask-main-abc123' -> 'flask'
         'requests' -> 'requests'
     """
     # Remove .cgc extension if present
-    name = bundle_name.replace('.cgc', '')
+    name = bundle_name.replace('.cgc', '').replace('.base64', '')
+    
+    if '__' in name:
+        if name.startswith('cgc__'):
+            name = name[5:]
+        parts = name.split('__')
+        return parts[1] if len(parts) > 1 else parts[0]
     
     # Split by hyphen and take the first part
-    # This assumes package names don't contain hyphens (may need refinement)
     parts = name.split('-')
-    
-    # For multi-word package names like 'python-bitcoin-utils',
-    # we need smarter logic. For now, take first part.
-    # TODO: Improve this with a known package list or better heuristics
     return parts[0]
 
 

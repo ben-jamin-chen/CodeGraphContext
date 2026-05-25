@@ -62,12 +62,14 @@ export async function packageCgcBundle(
 
   // 3. Format metadata.json
   const metadata = {
-    repo: repoName,
-    version: version,
-    timestamp: new Date().toISOString(),
-    total_nodes: nodes.length,
-    total_edges: links.length,
-    generator: "CodeGraphContext-Web-WASM"
+    format_version: "1.0.0",
+    generator: "WASM",
+    exported_at: new Date().toISOString().replace(/\.\d+Z$/, 'Z'),
+    name: repoName.endsWith('.cgc') ? repoName : `${repoName}.cgc`,
+    graph_metrics: {
+      total_nodes: nodes.length,
+      total_edges: links.length
+    }
   };
   zip.file("metadata.json", JSON.stringify(metadata, null, 2));
 

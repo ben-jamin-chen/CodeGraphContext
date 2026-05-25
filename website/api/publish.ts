@@ -70,6 +70,17 @@ export default async function handler(req: any, res: any) {
             });
         }
 
+        let bundleNameFromMeta = "";
+        try {
+            const metaText = await metadataFile.async("text");
+            const parsedMeta = JSON.parse(metaText);
+            if (parsedMeta && parsedMeta.name) {
+                bundleNameFromMeta = parsedMeta.name;
+            }
+        } catch (e) {
+            console.warn("Failed to parse metadata from uploaded zip:", e);
+        }
+
         // 3. Verify public GitHub repository exists
         try {
             const token = process.env.GITHUB_TOKEN;
@@ -121,13 +132,22 @@ export default async function handler(req: any, res: any) {
         }
 
         // B. Compile metadata record
-        const cleanRepoName = repo.replace(/\//g, '_');
-        const bundleFilename = `bundles/${cleanRepoName}-${version}.cgc.base64`;
+        let finalBundleName = bundleNameFromMeta;
+        if (finalBundleName && finalBundleName.endsWith('.cgc')) {
+            finalBundleName = finalBundleName.substring(0, finalBundleName.length - 4);
+        }
+        if (!finalBundleName) {
+            const cleanOwner = repo.split('/')[0];
+            const cleanRepoName = repo.split('/')[1];
+            finalBundleName = `${cleanOwner}__${cleanRepoName}__${version}__latest`;
+        }
+        
+        const bundleFilename = `bundles/${finalBundleName}.cgc.base64`;
         
         const newEntry = {
             name: repo.split('/')[1],
             repo: repo,
-            bundle_name: `${cleanRepoName}-${version}.cgc.base64`,
+            bundle_name: `${finalBundleName}.cgc.base64`,
             version: version,
             size: `${(fileBuffer.length / 1024 / 1024).toFixed(2)}MB`,
             download_url: `https://huggingface.co/datasets/${hfRepo}/resolve/main/${bundleFilename}`,

@@ -720,11 +720,14 @@ const Explore = () => {
           ...graphData,
           fileContents,
           metadata: {
-            repo: `${owner}/${repo}`,
-            version: latestCommitSha ? (latestCommitSha.length === 40 && /^[0-9a-fA-F]+$/.test(latestCommitSha) ? latestCommitSha.substring(0, 7) : latestCommitSha) : "1.0.0",
-            commit: latestCommitSha || "",
-            timestamp: new Date().toISOString(),
-            generator: "CodeGraphContext-Web-WASM"
+            format_version: "1.0.0",
+            generator: "WASM",
+            exported_at: new Date().toISOString().replace(/\.\d+Z$/, 'Z'),
+            name: `${owner}__${repo}__${latestCommitSha ? (latestCommitSha.length === 40 ? latestCommitSha.substring(0, 7) : latestCommitSha) : 'main'}__${latestCommitSha ? latestCommitSha.substring(0, 7) : 'commit'}.cgc`,
+            graph_metrics: {
+              total_nodes: graphData.nodes.length,
+              total_edges: graphData.links.length
+            }
           }
         };
         setGraphData(finalGraphData);
@@ -753,7 +756,19 @@ const Explore = () => {
     if (!graphData) return;
 
     const saveToCache = async () => {
-      const metaRepo = graphData.metadata?.repo || "";
+      let metaRepo = graphData.metadata?.repo || "";
+      if (!metaRepo && graphData.metadata?.name) {
+        let nameVal = graphData.metadata.name;
+        if (nameVal.endsWith('.cgc')) {
+          nameVal = nameVal.substring(0, nameVal.length - 4);
+        }
+        const parts = nameVal.split('__');
+        if (parts.length >= 2) {
+          metaRepo = `${parts[0]}/${parts[1]}`;
+        } else {
+          metaRepo = parts[0];
+        }
+      }
       let cleanOwner = "local";
       let cleanRepo = metaRepo || "local-project";
 

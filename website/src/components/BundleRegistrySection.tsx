@@ -171,9 +171,9 @@ const BundleRegistrySection = () => {
                 let commitSha = 'unknown';
                 let displayName = 'unknown';
                 
-                if (rawName.includes('__')) {
-                    // New format: cgc__{owner}__{repo}__{branch}__{commit}
-                    const parts = rawName.split('__');
+                // New format: cgc__{owner}__{repo}__{branch}__{commit} or {owner}__{repo}__{branch}__{commit}
+                const parts = rawName.split('__');
+                if (parts[0] === 'cgc') {
                     if (parts.length >= 5) {
                         owner = parts[1];
                         repoName = parts[2];
@@ -181,25 +181,14 @@ const BundleRegistrySection = () => {
                         commitSha = parts[4];
                         displayName = repoName;
                     }
-                } else if (rawName.includes('-')) {
-                    // Legacy format: {repo}-{branch}-{commit} or {name}-{version}
-                    const parts = rawName.split('-');
-                    if (parts.length >= 3) {
-                        repoName = parts.slice(0, parts.length - 2).join('-');
-                        branchName = parts[parts.length - 2];
-                        commitSha = parts[parts.length - 1];
-                        owner = repoName;
-                        displayName = repoName;
-                    } else if (parts.length === 2) {
-                        repoName = parts[0];
-                        commitSha = parts[1];
-                        owner = repoName;
+                } else {
+                    if (parts.length >= 4) {
+                        owner = parts[0];
+                        repoName = parts[1];
+                        branchName = parts[2];
+                        commitSha = parts[3];
                         displayName = repoName;
                     }
-                } else {
-                    repoName = rawName;
-                    displayName = rawName;
-                    owner = rawName;
                 }
                 
                 // Format display/commit

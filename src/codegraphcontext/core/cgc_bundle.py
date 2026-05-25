@@ -49,6 +49,28 @@ class _BundleEncoder(json.JSONEncoder):
         return super().default(obj)
 
 
+def _get_package_version() -> str:
+    """Dynamically fetch the version of the codegraphcontext package."""
+    try:
+        from importlib.metadata import version
+        return version("codegraphcontext")
+    except Exception:
+        try:
+            import os
+            current = os.path.dirname(os.path.abspath(__file__))
+            for _ in range(5):
+                pyproject = os.path.join(current, "pyproject.toml")
+                if os.path.exists(pyproject):
+                    with open(pyproject, "r") as f:
+                        for line in f:
+                            if line.strip().startswith("version ="):
+                                return line.split("=")[1].strip().strip('"').strip("'")
+                current = os.path.dirname(current)
+        except Exception:
+            pass
+        return "0.4.11"
+
+
 class CGCBundle:
     """Handles creation and loading of .cgc bundle files."""
     
@@ -106,25 +128,25 @@ class CGCBundle:
             with tempfile.TemporaryDirectory() as temp_dir:
                 temp_path = Path(temp_dir)
                 
-                # Step 1: Extract metadata
+                # Step 1: Extract nodes
+                info_logger("Extracting nodes...")
+                node_count = self._extract_nodes(temp_path / "nodes.jsonl", repo_path)
+                
+                # Step 2: Extract edges
+                info_logger("Extracting edges...")
+                edge_count = self._extract_edges(temp_path / "edges.jsonl", repo_path)
+                
+                # Step 3: Extract metadata
                 info_logger("Extracting metadata...")
-                metadata = self._extract_metadata(repo_path)
+                metadata = self._extract_metadata(repo_path, output_path.name, node_count, edge_count)
                 with open(temp_path / "metadata.json", 'w') as f:
                     json.dump(metadata, f, indent=2, cls=_BundleEncoder)
                 
-                # Step 2: Extract schema
+                # Step 4: Extract schema
                 info_logger("Extracting schema...")
                 schema = self._extract_schema()
                 with open(temp_path / "schema.json", 'w') as f:
                     json.dump(schema, f, indent=2, cls=_BundleEncoder)
-                
-                # Step 3: Extract nodes
-                info_logger("Extracting nodes...")
-                node_count = self._extract_nodes(temp_path / "nodes.jsonl", repo_path)
-                
-                # Step 4: Extract edges
-                info_logger("Extracting edges...")
-                edge_count = self._extract_edges(temp_path / "edges.jsonl", repo_path)
                 
                 # Step 5: Generate statistics
                 if include_stats:
@@ -199,11 +221,24 @@ class CGCBundle:
                 with open(temp_path / "metadata.json", 'r') as f:
                     metadata = json.load(f)
                 
-                info_logger(f"Loading bundle: {metadata.get('repo', 'unknown')}")
-                info_logger(f"Bundle version: {metadata.get('cgc_version', 'unknown')}")
+                # Extract repo name from metadata gracefully
+                repo_name = metadata.get('repo')
+                if not repo_name and 'name' in metadata:
+                    name_val = metadata['name']
+                    if name_val.endswith('.cgc'):
+                        name_val = name_val[:-4]
+                    parts = name_val.split('__')
+                    if len(parts) >= 2:
+                        repo_name = parts[1]
+                    else:
+                        repo_name = parts[0]
+                if not repo_name:
+                    repo_name = "unknown"
+                
+                info_logger(f"Loading bundle: {repo_name}")
+                info_logger(f"Bundle version: {metadata.get('format_version', '1.0.0')}")
                 
                 # Step 4: Handle existing data
-                repo_name = metadata.get('repo', 'unknown')
                 repo_path = metadata.get('repo_path')
                 
                 if clear_existing:
@@ -231,7 +266,7 @@ class CGCBundle:
                 edge_count = self._import_edges(temp_path / "edges.jsonl")
             
             success_msg = f"✅ Successfully imported {bundle_path.name}\n"
-            success_msg += f"   Repository: {metadata.get('repo', 'unknown')}\n"
+            success_msg += f"   Repository: {repo_name}\n"
             success_msg += f"   Nodes: {node_count:,} | Edges: {edge_count:,}"
             info_logger(success_msg)
             return True, success_msg
@@ -245,78 +280,28 @@ class CGCBundle:
     # EXPORT HELPERS
     # ========================================================================
     
-    def _extract_metadata(self, repo_path: Optional[Path]) -> Dict[str, Any]:
+    def _extract_metadata(
+        self,
+        repo_path: Optional[Path],
+        bundle_name: str,
+        node_count: int,
+        edge_count: int
+    ) -> Dict[str, Any]:
         """Extract metadata about the repository and indexing process."""
+        # Ensure UTC time in ISO format
+        exported_at = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+        pkg_ver = _get_package_version()
+        
         metadata = {
-            "cgc_version": self.VERSION,
-            "exported_at": datetime.now().isoformat(),
-            "format_version": "1.0"
+            "format_version": "1.0.0",
+            "generator": f"PYv{pkg_ver}",
+            "exported_at": exported_at,
+            "name": bundle_name,
+            "graph_metrics": {
+                "total_nodes": node_count,
+                "total_edges": edge_count
+            }
         }
-        
-        # Get repository information
-        with self.db_manager.get_driver().session() as session:
-            if repo_path:
-                # Specific repository
-                result = session.run(
-                    "MATCH (r:Repository {path: $path}) RETURN r",
-                    path=str(repo_path.resolve())
-                )
-                repo_node = result.single()
-                if repo_node:
-                    node = repo_node['r']
-                    # Convert Node to dict (handle both Neo4j and FalkorDB)
-                    try:
-                        repo = dict(node)
-                    except TypeError:
-                        # FalkorDB nodes - access properties directly
-                        repo = {}
-                        if hasattr(node, '_properties'):
-                            repo = dict(node._properties)
-                        elif hasattr(node, 'properties'):
-                            repo = dict(node.properties)
-                        else:
-                            # Fallback: try to get individual properties
-                            for attr in ['name', 'path', 'is_dependency']:
-                                if hasattr(node, attr):
-                                    repo[attr] = getattr(node, attr)
-                    
-                    metadata["repo"] = repo.get('name', str(repo_path.name if repo_path else 'unknown'))
-                    # Clean up absolute path prefix to keep it relative
-                    meta_path = repo.get('path', '')
-                    if repo_path and meta_path.startswith(str(repo_path.resolve())):
-                        repo_str = str(repo_path.resolve())
-                        rel = meta_path[len(repo_str):].lstrip('/')
-                        metadata["repo_path"] = "./" + rel if rel else "."
-                    else:
-                        metadata["repo_path"] = meta_path
-                    metadata["is_dependency"] = repo.get('is_dependency', False)
-            else:
-                # All repositories
-                result = session.run(
-                    "MATCH (r:Repository) RETURN r.name as name, r.path as path"
-                )
-                repos = [{"name": record["name"], "path": record["path"]} for record in result]
-                metadata["repositories"] = repos
-                metadata["repo"] = "multiple" if len(repos) > 1 else repos[0]["name"] if repos else "unknown"
-            
-            # Try to get git information if available
-            if repo_path and repo_path.exists():
-                commit = get_repo_commit_hash(repo_path)
-                if commit:
-                    metadata["commit"] = commit[:8]
-
-                try:
-                    result = session.run("""
-                        MATCH (f:File)
-                        WHERE f.path STARTS WITH $repo_path
-                        RETURN f.language as language, count(*) as count
-                        ORDER BY count DESC
-                    """, repo_path=str(repo_path.resolve()))
-                    languages = {record["language"]: record["count"] for record in result if record["language"]}
-                    metadata["languages"] = list(languages.keys())
-                except Exception:
-                    pass
-        
         return metadata
     
     def _extract_schema(self) -> Dict[str, Any]:
@@ -557,19 +542,15 @@ class CGCBundle:
     
     def _create_readme(self, output_file: Path, metadata: Dict, stats: Optional[Dict]):
         """Create a human-readable README for the bundle."""
+        bundle_name = metadata.get('name', 'Unknown')
         readme_content = f"""# CodeGraphContext Bundle
 
 ## Repository Information
-- **Repository**: {metadata.get('repo', 'Unknown')}
+- **Bundle Name**: {bundle_name}
 - **Exported**: {metadata.get('exported_at', 'Unknown')}
-- **CGC Version**: {metadata.get('cgc_version', 'Unknown')}
+- **Generator**: {metadata.get('generator', 'Unknown')}
+- **Format Version**: {metadata.get('format_version', 'Unknown')}
 """
-        
-        if 'commit' in metadata:
-            readme_content += f"- **Commit**: {metadata['commit']}\n"
-        
-        if 'languages' in metadata:
-            readme_content += f"- **Languages**: {', '.join(metadata['languages'])}\n"
         
         if stats:
             readme_content += f"""
@@ -628,8 +609,8 @@ cgc import <bundle-file>.cgc
         try:
             with open(bundle_dir / "metadata.json", 'r') as f:
                 metadata = json.load(f)
-                if 'cgc_version' not in metadata:
-                    return False, "Invalid metadata: missing cgc_version"
+                if 'cgc_version' not in metadata and 'generator' not in metadata:
+                    return False, "Invalid metadata: missing generator or cgc_version"
         except json.JSONDecodeError as e:
             return False, f"Invalid metadata.json: {e}"
         
