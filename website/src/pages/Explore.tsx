@@ -929,14 +929,19 @@ const Explore = () => {
       console.log(`[Explore Tunnel] Running Python MCP Tool: name=${toolName}`, args);
       
       const targetRepo = args?.repo || args?.repository || "";
-      const currentGraph = await resolveGraph(targetRepo);
+      
+      const isGlobalTool = ["list_indexed_repositories", "search_registry_bundles"].includes(toolName);
+      let currentGraph = null;
 
-      if (!currentGraph) {
-        throw new Error(`SILENT_IGNORE: The repository '${targetRepo}' is not actively loaded or cached in this browser tab.`);
+      if (!isGlobalTool) {
+        currentGraph = await resolveGraph(targetRepo);
+        if (!currentGraph) {
+          throw new Error(`SILENT_IGNORE: The repository '${targetRepo}' is not actively loaded or cached in this browser tab.`);
+        }
       }
 
-      const nodes = currentGraph.nodes || [];
-      const links = currentGraph.links || [];
+      const nodes = currentGraph?.nodes || [];
+      const links = currentGraph?.links || [];
 
       switch (toolName) {
         case "get_repository_stats": {
