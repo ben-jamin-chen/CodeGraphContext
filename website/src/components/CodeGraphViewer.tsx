@@ -1813,7 +1813,12 @@ export default function CodeGraphViewer({ data, onClose }: { data: any, onClose:
                 <div className="flex items-center gap-2">
                   <span
                     className="text-blue-400/50 text-[10px] font-bold uppercase tracking-widest cursor-pointer"
-                    onClick={(e) => { e.stopPropagation(); setShowConfig(true); }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setShowConfig(true);
+                      setCollapsed(false);
+                      setIsPathMode(false);
+                    }}
                   >
                     Filters
                   </span>
