@@ -18,7 +18,7 @@ def _github_headers() -> dict:
 
 def _get_manifest_url() -> str:
     import os
-    hf_repo = os.environ.get("HF_REGISTRY_REPO") or "codegraphcontext/bundles"
+    hf_repo = os.environ.get("HF_REGISTRY_REPO") or "codegraphcontext/registry"
     return f"https://huggingface.co/datasets/{hf_repo}/raw/main/manifest.json"
 
 class BundleRegistry:

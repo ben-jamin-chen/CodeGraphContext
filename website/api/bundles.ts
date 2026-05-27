@@ -12,7 +12,7 @@ export default async function handler(req: any, res: any) {
 
         // 1. Fetch community and server bundles from Hugging Face manifest
         try {
-            const hfRepo = process.env.HF_REGISTRY_REPO || 'codegraphcontext/bundles';
+            const hfRepo = process.env.HF_REGISTRY_REPO || 'codegraphcontext/registry';
             const manifestUrl = `https://huggingface.co/datasets/${hfRepo}/raw/main/manifest.json`;
             const manifestResponse = await fetch(manifestUrl);
 
