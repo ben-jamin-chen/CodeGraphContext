@@ -31,9 +31,9 @@ jobs:
             console.log(`Processing label: "${labelName}"`);
             console.log(`Associated with PR? ${isPullRequest}`);
 
-            // 1. Handle "blocked" label
-            if (label === 'blocked') {
-              console.log('Detected "blocked" label. Attempting to update project field to Blocked...');
+            // Helper function to update project status
+            async function updateProjectStatus(targetStatusName) {
+              console.log(`Attempting to update project Status field to "${targetStatusName}"...`);
               try {
                 const query = `
                   query($nodeId: ID!) {
@@ -76,77 +76,83 @@ jobs:
 
                 if (projectItems.length === 0) {
                   console.log('No projects associated with this issue.');
-                  await github.rest.issues.createComment({
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    issue_number: context.issue.number,
-                    body: '⚠️ This issue was labeled as **blocked**, but no associated GitHub Projects were found to update status.'
-                  });
-                } else {
-                  for (const item of projectItems) {
-                    console.log(`Found project: "${item.project.title}" (ID: ${item.project.id})`);
-                    
-                    // Find single-select Status field
-                    const statusField = item.project.fields.nodes.find(
-                      f => f.name.toLowerCase() === 'status' && f.options
+                  return false;
+                }
+
+                let updatedCount = 0;
+                for (const item of projectItems) {
+                  console.log(`Found project: "${item.project.title}" (ID: ${item.project.id})`);
+                  
+                  // Find single-select Status field
+                  const statusField = item.project.fields.nodes.find(
+                    f => f.name.toLowerCase() === 'status' && f.options
+                  );
+
+                  if (statusField) {
+                    const targetOption = statusField.options.find(
+                      opt => opt.name.toLowerCase() === targetStatusName.toLowerCase()
                     );
 
-                    if (statusField) {
-                      const blockedOption = statusField.options.find(
-                        opt => opt.name.toLowerCase() === 'blocked'
-                      );
-
-                      if (blockedOption) {
-                        console.log(`Found option "Blocked" (ID: ${blockedOption.id}) on field "${statusField.name}"`);
-                        
-                        const mutation = `
-                          mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
-                            updateProjectV2ItemFieldValue(
-                              input: {
-                                projectId: $projectId
-                                itemId: $itemId
-                                fieldId: $fieldId
-                                value: {
-                                  singleSelectOptionId: $optionId
-                                }
-                              }
-                            ) {
-                              projectV2Item {
-                                id
+                    if (targetOption) {
+                      console.log(`Found option "${targetOption.name}" (ID: ${targetOption.id}) on field "${statusField.name}"`);
+                      
+                      const mutation = `
+                        mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                          updateProjectV2ItemFieldValue(
+                            input: {
+                              projectId: $projectId
+                              itemId: $itemId
+                              fieldId: $fieldId
+                              value: {
+                                singleSelectOptionId: $optionId
                               }
                             }
+                          ) {
+                            projectV2Item {
+                              id
+                            }
                           }
-                        `;
+                        }
+                      `;
 
-                        await github.graphql(mutation, {
-                          projectId: item.project.id,
-                          itemId: item.id,
-                          fieldId: statusField.id,
-                          optionId: blockedOption.id
-                        });
-                        console.log('Successfully updated status to Blocked.');
-
-                        await github.rest.issues.createComment({
-                          owner: context.repo.owner,
-                          repo: context.repo.repo,
-                          issue_number: context.issue.number,
-                          body: `🚦 Updated Project Status to **Blocked** in project **${item.project.title}**.`
-                        });
-                      } else {
-                        console.warn('No option named "Blocked" found in the Status field.');
-                      }
+                      await github.graphql(mutation, {
+                        projectId: item.project.id,
+                        itemId: item.id,
+                        fieldId: statusField.id,
+                        optionId: targetOption.id
+                      });
+                      console.log(`Successfully updated Status to "${targetOption.name}" on project "${item.project.title}".`);
+                      updatedCount++;
                     } else {
-                      console.warn('No single-select field named "Status" found in the project.');
+                      console.warn(`No option named "${targetStatusName}" found in the Status field for project "${item.project.title}".`);
                     }
+                  } else {
+                    console.warn(`No single-select field named "Status" found in project "${item.project.title}".`);
                   }
                 }
+                return updatedCount > 0;
               } catch (error) {
                 console.error(`Error updating project field: ${error.message}`);
+                return false;
+              }
+            }
+
+            // 1. Handle "blocked" label
+            if (label === 'blocked') {
+              const success = await updateProjectStatus('Blocked');
+              if (success) {
                 await github.rest.issues.createComment({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   issue_number: context.issue.number,
-                  body: `⚠️ Attempted to update Project Status to **Blocked**, but encountered an error: \`${error.message}\`. Please ensure the action runner has project permissions and a "Status" field with a "Blocked" option exists.`
+                  body: `🚦 Updated Project Status to **Blocked**.`
+                });
+              } else {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  body: `⚠️ Attempted to update Project Status to **Blocked**, but no matching option or project was found.`
                 });
               }
             }
@@ -154,33 +160,53 @@ jobs:
             // 2. Handle team roles assignment based on docs/TEAM_ROLES.md (case-insensitive exact names)
             let teamName = null;
             let teamSlug = null;
+            let projectStatusName = null;
 
             if (label === 'adminarchs') {
               teamName = 'AdminArchs (Senior Maintainers & Core Architecture)';
               teamSlug = 'adminarchs';
+              projectStatusName = 'AdminArchs';
+            } else if (label === 'devops') {
+              teamName = 'AdminArchs (Senior Maintainers & Core Architecture)';
+              teamSlug = 'adminarchs';
+              projectStatusName = 'DevOps';
             } else if (label === 'pythondevs') {
               teamName = 'PythonDevs (Core Engine Developers)';
               teamSlug = 'pythondevs';
+              projectStatusName = 'PythonDevs';
             } else if (label === 'aidevs') {
               teamName = 'AIDevs (AI & Machine Learning Integration)';
               teamSlug = 'aidevs';
+              projectStatusName = 'AIDevs';
             } else if (label === 'webdevs') {
               teamName = 'WebDevs (Frontend & UI/UX)';
               teamSlug = 'webdevs';
+              projectStatusName = 'WebDevs';
             } else if (label === 'extensiondevs') {
               teamName = 'ExtensionDevs (IDE & Browser Integrations)';
               teamSlug = 'extensiondevs';
+              projectStatusName = 'ExtensionDevs';
             } else if (label === 'docsexperts') {
               teamName = 'DocsExperts (Technical Writing & DevRel)';
               teamSlug = 'docsexperts';
+              projectStatusName = 'DocsExperts';
             } else if (label === 'testers') {
               teamName = 'Testers (QA & Benchmarking)';
               teamSlug = 'testers';
+              projectStatusName = 'Testers';
             }
 
             if (teamSlug) {
               console.log(`Routing to team: "${teamName}" (Slug: ${teamSlug})`);
               
+              // Update Project Status field if applicable
+              if (projectStatusName) {
+                const projectSuccess = await updateProjectStatus(projectStatusName);
+                if (projectSuccess) {
+                  console.log(`Successfully transitioned project status to "${projectStatusName}"`);
+                }
+              }
+
               // Tag the team via comment
               const commentBody = `Assigning to the **${teamName}** team.\nCC: @${context.repo.owner}/${teamSlug}`;
               try {
