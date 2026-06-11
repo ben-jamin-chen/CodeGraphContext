@@ -7,7 +7,7 @@ from collections import Counter
 from pathlib import Path
 import time
 import os
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 import typer
 from rich.console import Console
 from rich.table import Table
@@ -850,41 +850,50 @@ def stats_helper(path: str = None, context: Optional[str] = None):
         db_manager.close_driver()
 
 
-def watch_helper(path: str, context: Optional[str] = None, use_polling: Optional[bool] = None):
-    """Watch a directory for changes and auto-update the graph (blocking mode)."""
+def watch_helper(paths: Union[str, list[str]], context: Optional[str] = None, use_polling: Optional[bool] = None):
+    """Watch one or more directories for changes and auto-update the graph (blocking mode)."""
     import logging
     from ..core.watcher import CodeWatcher
-    
+
     # Suppress verbose watchdog DEBUG logs
     logging.getLogger('watchdog').setLevel(logging.WARNING)
     logging.getLogger('watchdog.observers').setLevel(logging.WARNING)
     logging.getLogger('watchdog.observers.inotify_buffer').setLevel(logging.WARNING)
-    
+
+    if isinstance(paths, str):
+        paths = [paths]
+
     services = _initialize_services(context)
     if not all(services[:3]):
         _fail_services_init()
 
     db_manager, graph_builder, code_finder, ctx = services
-    path_obj = Path(path).resolve()
 
-    if not path_obj.exists():
-        console.print(f"[red]Error: Path does not exist: {path_obj}[/red]")
-        db_manager.close_driver()
-        raise typer.Exit(code=1)
-    
-    if not path_obj.is_dir():
-        console.print(f"[red]Error: Path must be a directory: {path_obj}[/red]")
-        db_manager.close_driver()
-        raise typer.Exit(code=1)
+    # Validate every path up front so a typo in any argument fails fast
+    # before the watcher touches the graph.
+    path_objs: list[Path] = []
+    for path in paths:
+        path_obj = Path(path).resolve()
 
-    console.print(f"[bold cyan]🔍 Watching {path_obj} for changes...[/bold cyan]")
-    
-    # Check if already indexed — use File node count as a robust fallback so a
-    # transient empty result from list_indexed_repositories never triggers a
-    # destructive full rescan of an already-populated graph.
-    indexed_repos = code_finder.list_indexed_repositories()
-    is_indexed = any_repo_matches_path(indexed_repos, path_obj)
-    if not is_indexed:
+        if not path_obj.exists():
+            console.print(f"[red]Error: Path does not exist: {path_obj}[/red]")
+            db_manager.close_driver()
+            raise typer.Exit(code=1)
+
+        if not path_obj.is_dir():
+            console.print(f"[red]Error: Path must be a directory: {path_obj}[/red]")
+            db_manager.close_driver()
+            raise typer.Exit(code=1)
+
+        if path_obj not in path_objs:
+            path_objs.append(path_obj)
+
+    def _is_indexed(path_obj: Path, indexed_repos) -> bool:
+        # Check if already indexed — use File node count as a robust fallback so a
+        # transient empty result from list_indexed_repositories never triggers a
+        # destructive full rescan of an already-populated graph.
+        if any_repo_matches_path(indexed_repos, path_obj):
+            return True
         # Fallback: count File nodes whose path starts with this repo's path.
         # If > 100 exist, the repo is clearly already indexed — skip the scan.
         try:
@@ -899,48 +908,53 @@ def watch_helper(path: str, context: Optional[str] = None, use_polling: Optional
                     f"[watch] list_indexed_repositories returned no match for {path_obj} "
                     f"but {_count} File nodes exist — treating as already indexed."
                 )
-                is_indexed = True
+                return True
         except Exception as _e:
             warning_logger(f"[watch] Fallback indexed check failed: {_e}")
-    
+        return False
+
+    indexed_repos = code_finder.list_indexed_repositories()
+
     # Create watcher instance
     job_manager = JobManager()
     watcher = CodeWatcher(graph_builder, job_manager, use_polling=use_polling)
-    
+
     try:
         # Start the observer thread
         watcher.start()
-        
-        # Add the directory to watch
-        if is_indexed:
-            console.print("[green]✓[/green] Already indexed. Synchronizing current files...")
-            watcher.watch_directory(
-                str(path_obj),
-                perform_initial_scan=False,
-                sync_on_start=True,
-                cgcignore_path=ctx.cgcignore_path,
-            )
-        else:
-            console.print("[yellow]⚠[/yellow]  Not indexed yet. Performing initial scan...")
-            
-            # Index the repository first (like MCP does)
-            async def do_index():
-                await graph_builder.build_graph_from_path_async(
-                    path_obj,
-                    is_dependency=False,
+
+        for path_obj in path_objs:
+            console.print(f"[bold cyan]🔍 Watching {path_obj} for changes...[/bold cyan]")
+
+            if _is_indexed(path_obj, indexed_repos):
+                console.print("[green]✓[/green] Already indexed. Synchronizing current files...")
+                watcher.watch_directory(
+                    str(path_obj),
+                    perform_initial_scan=False,
+                    sync_on_start=True,
                     cgcignore_path=ctx.cgcignore_path,
                 )
-            
-            asyncio.run(do_index())
-            console.print("[green]✓[/green] Initial scan complete")
-            
-            # Now start watching (without another scan)
-            watcher.watch_directory(
-                str(path_obj),
-                perform_initial_scan=False,
-                cgcignore_path=ctx.cgcignore_path,
-            )
-        
+            else:
+                console.print("[yellow]⚠[/yellow]  Not indexed yet. Performing initial scan...")
+
+                # Index the repository first (like MCP does)
+                async def do_index(p: Path = path_obj):
+                    await graph_builder.build_graph_from_path_async(
+                        p,
+                        is_dependency=False,
+                        cgcignore_path=ctx.cgcignore_path,
+                    )
+
+                asyncio.run(do_index())
+                console.print("[green]✓[/green] Initial scan complete")
+
+                # Now start watching (without another scan)
+                watcher.watch_directory(
+                    str(path_obj),
+                    perform_initial_scan=False,
+                    cgcignore_path=ctx.cgcignore_path,
+                )
+
         console.print("[bold green]👀 Monitoring for file changes...[/bold green] (Press Ctrl+C to stop)")
         console.print("[dim]💡 Tip: Open a new terminal window to continue working[/dim]\n")
         

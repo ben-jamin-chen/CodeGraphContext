@@ -14,7 +14,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 from rich import box
-from typing import Optional
+from typing import List, Optional
 import asyncio
 import logging
 import json
@@ -1558,7 +1558,7 @@ def add_package(
 
 @app.command()
 def watch(
-    path: str = typer.Argument(".", help="Path to the directory to watch. Defaults to current directory."),
+    paths: Optional[List[str]] = typer.Argument(None, help="Directories to watch. Defaults to the current directory."),
     context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
     poll: bool = typer.Option(
         False,
@@ -1567,29 +1567,30 @@ def watch(
     ),
 ):
     """
-    Watch a directory for file changes and automatically update the code graph.
-    
-    This command runs in the foreground and monitors the specified directory
+    Watch one or more directories for file changes and automatically update the code graph.
+
+    This command runs in the foreground and monitors the specified directories
     for any file changes. When changes are detected, the code graph is
     automatically updated.
-    
+
     The watcher will:
-    - Perform an initial scan if the directory is not yet indexed
+    - Perform an initial scan for any directory that is not yet indexed
     - Monitor for file creation, modification, deletion, and moves
     - Automatically re-index affected files and update relationships
-    
+
     Press Ctrl+C to stop watching.
-    
+
     Examples:
         cgc watch .                    # Watch current directory
         cgc watch /path/to/project     # Watch specific directory
+        cgc watch /repo/a /repo/b      # Watch multiple directories
         cgc watch --poll .             # Use polling for Docker/NFS/SMB mounts
         cgc w .                        # Using shortcut alias
 
     Set CGC_WATCH_POLLING=1 to use polling without passing --poll.
     """
     _load_credentials()
-    watch_helper(path, context, use_polling=poll or None)
+    watch_helper(paths or ["."], context, use_polling=poll or None)
 
 @app.command()
 def unwatch(
