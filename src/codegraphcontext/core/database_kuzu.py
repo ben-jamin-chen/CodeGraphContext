@@ -122,7 +122,7 @@ class KuzuDBManager:
             ("Directory", "path STRING, name STRING, PRIMARY KEY (path)"),
             ("Module", "name STRING, lang STRING, full_import_name STRING, path STRING, line_number INT64, PRIMARY KEY (name)"),
             # For types with composite keys (name, path, line_number), we use a 'uid'
-            ("Function", "uid STRING, name STRING, path STRING, line_number INT64, end_line INT64, source STRING, docstring STRING, lang STRING, cyclomatic_complexity INT64, context STRING, context_type STRING, class_context STRING, class_context_line INT64, is_dependency BOOLEAN, decorators STRING[], args STRING[], http_method STRING, http_path STRING, PRIMARY KEY (uid)"),
+            ("Function", "uid STRING, name STRING, path STRING, line_number INT64, end_line INT64, source STRING, docstring STRING, lang STRING, cyclomatic_complexity INT64, context STRING, context_type STRING, class_context STRING, class_context_line INT64, module_context STRING, is_dependency BOOLEAN, decorators STRING[], args STRING[], http_method STRING, http_path STRING, PRIMARY KEY (uid)"),
             ("Class", "uid STRING, name STRING, path STRING, line_number INT64, end_line INT64, source STRING, docstring STRING, lang STRING, node_type STRING, is_dependency BOOLEAN, decorators STRING[], PRIMARY KEY (uid)"),
             ("Variable", "uid STRING, name STRING, path STRING, line_number INT64, source STRING, docstring STRING, lang STRING, value STRING, context STRING, is_dependency BOOLEAN, PRIMARY KEY (uid)"),
             ("Trait", "uid STRING, name STRING, path STRING, line_number INT64, end_line INT64, source STRING, docstring STRING, lang STRING, is_dependency BOOLEAN, PRIMARY KEY (uid)"),
@@ -130,6 +130,7 @@ class KuzuDBManager:
             ("Macro", "uid STRING, name STRING, path STRING, line_number INT64, end_line INT64, source STRING, docstring STRING, lang STRING, is_dependency BOOLEAN, PRIMARY KEY (uid)"),
             ("Struct", "uid STRING, name STRING, path STRING, line_number INT64, end_line INT64, source STRING, docstring STRING, lang STRING, is_dependency BOOLEAN, PRIMARY KEY (uid)"),
             ("Enum", "uid STRING, name STRING, path STRING, line_number INT64, end_line INT64, source STRING, docstring STRING, lang STRING, is_dependency BOOLEAN, PRIMARY KEY (uid)"),
+            ("EnumMember", "uid STRING, name STRING, path STRING, line_number INT64, lang STRING, is_dependency BOOLEAN, PRIMARY KEY (uid)"),
             ("Union", "uid STRING, name STRING, path STRING, line_number INT64, end_line INT64, source STRING, docstring STRING, lang STRING, is_dependency BOOLEAN, PRIMARY KEY (uid)"),
             ("Annotation", "uid STRING, name STRING, path STRING, line_number INT64, end_line INT64, source STRING, docstring STRING, lang STRING, is_dependency BOOLEAN, PRIMARY KEY (uid)"),
             ("Record", "uid STRING, name STRING, path STRING, line_number INT64, end_line INT64, source STRING, docstring STRING, lang STRING, is_dependency BOOLEAN, PRIMARY KEY (uid)"),
@@ -157,17 +158,18 @@ class KuzuDBManager:
                 FROM File TO Function, FROM File TO Class, FROM File TO Variable, FROM File TO Trait, FROM File TO Interface, 
                 FROM File TO `Macro`, FROM File TO Struct, FROM File TO Enum, FROM File TO `Union`, FROM File TO Annotation, 
                 FROM File TO Record, FROM File TO `Property`, FROM File TO Mixin, FROM File TO Extension, FROM File TO Module, 
-                FROM File TO Object,
+                FROM File TO Object, FROM File TO EnumMember,
                 FROM Repository TO Directory, FROM Directory TO Directory, FROM Directory TO File, FROM Repository TO File, 
                 FROM Class TO Function, FROM Module TO Function, FROM Interface TO Function, FROM Struct TO Function, 
                 FROM Record TO Function, FROM Trait TO Function, FROM Object TO Function, FROM Mixin TO Function,
                 FROM Extension TO Function, FROM Class TO Class, FROM Class TO Interface, FROM Class TO Struct, 
-                FROM Class TO Variable, FROM Module TO Class, FROM Module TO Module, FROM `Macro` TO `Macro`, FROM Function TO Function
+                FROM Class TO Variable, FROM Class TO EnumMember,
+                FROM Module TO Class, FROM Module TO Module, FROM `Macro` TO `Macro`, FROM Function TO Function
             """, True),
             ("CALLS", """
                 FROM Function TO Function, FROM Function TO Class, FROM Function TO Interface, FROM Function TO Trait, 
                 FROM Function TO Struct, FROM Function TO Enum, FROM Function TO Record, FROM Function TO `Union`,
-                FROM Function TO Mixin, FROM Function TO Extension, FROM Function TO Object,
+                FROM Function TO Mixin, FROM Function TO Extension, FROM Function TO Object, FROM Function TO Parameter,
                 FROM Class TO Function, FROM Class TO Class, FROM Class TO Interface, FROM Class TO Trait, 
                 FROM Class TO Struct, FROM Class TO Enum, FROM Class TO Record, FROM Class TO `Union`,
                 FROM Interface TO Function, FROM Interface TO Class, FROM Interface TO Interface,
@@ -179,6 +181,7 @@ class KuzuDBManager:
                 FROM `Macro` TO Function, FROM `Macro` TO Class, FROM `Macro` TO Interface,
                 FROM File TO Function, FROM File TO Class, FROM File TO Interface, FROM File TO Trait, 
                 FROM File TO Struct, FROM File TO Enum, FROM File TO Record, FROM File TO `Union`,
+                FROM Function TO File,
                 FROM Variable TO Function, FROM Variable TO Class, FROM Variable TO Interface,
                 line_number INT64, args STRING[], full_call_name STRING, args_key STRING, confidence DOUBLE, resolution_tier INT64, 
                 confidence_label STRING, source STRING, resolution_method STRING, called_name STRING
@@ -196,11 +199,19 @@ class KuzuDBManager:
                 FROM Extension TO Class, FROM Extension TO Trait, FROM Extension TO Interface, FROM Extension TO Struct, FROM Extension TO Enum, FROM Extension TO `Union`, FROM Extension TO Record, FROM Extension TO Mixin, FROM Extension TO Extension, FROM Extension TO Module, FROM Extension TO Object, FROM Extension TO ExternalClass,
                 FROM Module TO Class, FROM Module TO Trait, FROM Module TO Interface, FROM Module TO Struct, FROM Module TO Enum, FROM Module TO `Union`, FROM Module TO Record, FROM Module TO Mixin, FROM Module TO Extension, FROM Module TO Module, FROM Module TO Object, FROM Module TO ExternalClass,
                 FROM Object TO Class, FROM Object TO Trait, FROM Object TO Interface, FROM Object TO Struct, FROM Object TO Enum, FROM Object TO `Union`, FROM Object TO Record, FROM Object TO Mixin, FROM Object TO Extension, FROM Object TO Module, FROM Object TO Object, FROM Object TO ExternalClass,
+                FROM Variable TO Class, FROM Variable TO Trait, FROM Variable TO Interface, FROM Variable TO Struct, FROM Variable TO Enum, FROM Variable TO `Union`, FROM Variable TO Record, FROM Variable TO Mixin, FROM Variable TO Extension, FROM Variable TO Module, FROM Variable TO Object, FROM Variable TO Variable, FROM Variable TO ExternalClass,
+                FROM Class TO Variable, FROM Trait TO Variable, FROM Interface TO Variable, FROM Struct TO Variable, FROM Enum TO Variable, FROM `Union` TO Variable, FROM Record TO Variable, FROM Mixin TO Variable, FROM Extension TO Variable, FROM Module TO Variable, FROM Object TO Variable,
                 confidence_label STRING
             """, True),
             ("HAS_PARAMETER", "FROM Function TO Parameter", False),
             ("INCLUDES", "FROM Class TO Module", False),
-            ("IMPLEMENTS", "FROM Class TO Interface, FROM Struct TO Interface, FROM Record TO Interface, FROM Mixin TO Interface, FROM Extension TO Interface, FROM Enum TO Interface, FROM Object TO Interface, FROM `Union` TO Interface, FROM Trait TO Interface", True),
+            ("IMPLEMENTS", "FROM Class TO Interface, FROM Class TO Class, FROM Struct TO Interface, FROM Record TO Interface, FROM Mixin TO Interface, FROM Extension TO Interface, FROM Enum TO Interface, FROM Object TO Interface, FROM `Union` TO Interface, FROM Trait TO Interface, FROM Module TO Module, FROM Module TO Interface, confidence_label STRING", True),
+            ("METACLASS", "FROM Class TO Class, line_number INT64, confidence_label STRING", False),
+            ("DECORATED_BY", "FROM Function TO Function, FROM Class TO Function, line_number INT64", True),
+            ("COMPANION_OF", "FROM Object TO Class", False),
+            ("EMBEDS", "FROM Struct TO Struct, line_number INT64", False),
+            ("PARTIAL_OF", "FROM Class TO Class, line_number INT64, confidence_label STRING", False),
+            ("PART_OF", "FROM File TO File", False),
             ("INJECTS", "FROM Class TO Class, field_name STRING, inject_line INT64, confidence_label STRING", False),
             ("MAPS_TO", "FROM Class TO DbTable, datastore STRING, line_number INT64", False),
             ("READS", "FROM Function TO DbTable, line_number INT64", False),
@@ -250,6 +261,7 @@ class KuzuDBManager:
             ("Function", "http_path", "STRING"),
             # Kotlin/JVM precision improvements
             ("Function", "class_context_line", "INT64"),
+            ("Function", "module_context", "STRING"),
             ("Class", "node_type", "STRING"),
         ]
 
@@ -282,7 +294,44 @@ class KuzuDBManager:
         for sub in _INHERITS_SUBTABLES:
             group_migrations.append((sub, "confidence_label", "STRING"))
 
+        _IMPLEMENTS_SUBTABLES = [
+            "IMPLEMENTS_Class_Interface", "IMPLEMENTS_Class_Class",
+            "IMPLEMENTS_Struct_Interface", "IMPLEMENTS_Module_Module",
+            "IMPLEMENTS_Module_Interface",
+        ]
+        for sub in _IMPLEMENTS_SUBTABLES:
+            group_migrations.append((sub, "confidence_label", "STRING"))
+
         all_migrations = simple_migrations + group_migrations
+
+        # Relationship tables added after older databases were created.
+        rel_table_migrations = [
+            ("METACLASS", "FROM Class TO Class, line_number INT64, confidence_label STRING", False),
+            ("DECORATED_BY", "FROM Function TO Function, FROM Class TO Function, line_number INT64", True),
+            ("COMPANION_OF", "FROM Object TO Class", False),
+            ("EMBEDS", "FROM Struct TO Struct, line_number INT64", False),
+            ("PARTIAL_OF", "FROM Class TO Class, line_number INT64, confidence_label STRING", False),
+            ("PART_OF", "FROM File TO File", False),
+        ]
+        for table_name, schema, use_group in rel_table_migrations:
+            try:
+                if use_group:
+                    self._conn.execute(f"CREATE REL TABLE GROUP `{table_name}`({schema})")
+                else:
+                    self._conn.execute(f"CREATE REL TABLE `{table_name}`({schema})")
+            except Exception as e:
+                if "already exists" not in str(e).lower():
+                    debug_log(f"Kuzu Schema Rel Migration ({table_name}): {e}")
+
+        try:
+            self._conn.execute(
+                "CREATE NODE TABLE `EnumMember`("
+                "uid STRING, name STRING, path STRING, line_number INT64, "
+                "lang STRING, is_dependency BOOLEAN, PRIMARY KEY (uid))"
+            )
+        except Exception as e:
+            if "already exists" not in str(e).lower():
+                debug_log(f"Kuzu Schema Node Migration (EnumMember): {e}")
 
         for table_name, column_name, column_type in all_migrations:
             try:
@@ -414,6 +463,7 @@ class KuzuSessionWrapper:
             'Macro': ['name', 'path', 'line_number'],
             'Struct': ['name', 'path', 'line_number'],
             'Enum': ['name', 'path', 'line_number'],
+            'EnumMember': ['name', 'path', 'line_number'],
             'Union': ['name', 'path', 'line_number'],
             'Annotation': ['name', 'path', 'line_number'],
             'Record': ['name', 'path', 'line_number'],
@@ -650,7 +700,7 @@ class KuzuSessionWrapper:
             'File': {'path', 'name', 'relative_path', 'package_name', 'is_dependency'},
             'Directory': {'path', 'name'},
             'Module': {'name', 'lang', 'full_import_name', 'path', 'line_number'},
-            'Function': {'uid', 'name', 'path', 'line_number', 'end_line', 'source', 'docstring', 'lang', 'cyclomatic_complexity', 'context', 'context_type', 'class_context', 'class_context_line', 'is_dependency', 'decorators', 'args', 'http_method', 'http_path'},
+            'Function': {'uid', 'name', 'path', 'line_number', 'end_line', 'source', 'docstring', 'lang', 'cyclomatic_complexity', 'context', 'context_type', 'class_context', 'class_context_line', 'module_context', 'is_dependency', 'decorators', 'args', 'http_method', 'http_path'},
             'Class': {'uid', 'name', 'path', 'line_number', 'end_line', 'source', 'docstring', 'lang', 'node_type', 'is_dependency', 'decorators'},
             'Variable': {'uid', 'name', 'path', 'line_number', 'source', 'docstring', 'lang', 'value', 'context', 'is_dependency'},
             'Trait': {'uid', 'name', 'path', 'line_number', 'end_line', 'source', 'docstring', 'lang', 'is_dependency'},
@@ -658,6 +708,7 @@ class KuzuSessionWrapper:
             'Macro': {'uid', 'name', 'path', 'line_number', 'end_line', 'source', 'docstring', 'lang', 'is_dependency'},
             'Struct': {'uid', 'name', 'path', 'line_number', 'end_line', 'source', 'docstring', 'lang', 'is_dependency'},
             'Enum': {'uid', 'name', 'path', 'line_number', 'end_line', 'source', 'docstring', 'lang', 'is_dependency'},
+            'EnumMember': {'uid', 'name', 'path', 'line_number', 'lang', 'is_dependency'},
             'Union': {'uid', 'name', 'path', 'line_number', 'end_line', 'source', 'docstring', 'lang', 'is_dependency'},
             'Annotation': {'uid', 'name', 'path', 'line_number', 'end_line', 'source', 'docstring', 'lang', 'is_dependency'},
             'Record': {'uid', 'name', 'path', 'line_number', 'end_line', 'source', 'docstring', 'lang', 'is_dependency'},

@@ -748,10 +748,32 @@ class GraphBuilder:
         self.link_function_calls(all_file_data, imports_map, file_class_lookup)
 
     def link_inheritance(self, all_file_data: list[Dict], imports_map: dict) -> None:
-        """Resolve and persist INHERITS / C# IMPLEMENTS (public API)."""
+        """Resolve and persist INHERITS / C# IMPLEMENTS / Go IMPLEMENTS (public API)."""
+        from .indexing.resolution.inheritance import (
+            build_companion_of_links,
+            build_decorated_by_links,
+            build_elixir_implements_links,
+            build_embeds_links,
+            build_go_implements_links,
+            build_haskell_implements_links,
+            build_metaclass_links,
+            build_partial_of_links,
+            build_part_of_links,
+        )
+
         info_logger(f"[INHERITS] Resolving inheritance links across {len(all_file_data)} files...")
         inheritance_batch, csharp_files = build_inheritance_and_csharp_files(all_file_data, imports_map)
+        implements_batch = build_go_implements_links(all_file_data)
+        implements_batch.extend(build_haskell_implements_links(all_file_data))
+        implements_batch.extend(build_elixir_implements_links(all_file_data))
         self._writer.write_inheritance_links(inheritance_batch, csharp_files, imports_map)
+        self._writer.write_implements_links(implements_batch)
+        self._writer.write_embeds_links(build_embeds_links(all_file_data))
+        self._writer.write_companion_of_links(build_companion_of_links(all_file_data))
+        self._writer.write_partial_of_links(build_partial_of_links(all_file_data))
+        self._writer.write_part_of_links(build_part_of_links(all_file_data))
+        self._writer.write_metaclass_links(build_metaclass_links(all_file_data, imports_map))
+        self._writer.write_decorated_by_links(build_decorated_by_links(all_file_data, imports_map))
 
     def _create_all_inheritance_links(self, all_file_data: list[Dict], imports_map: dict) -> None:
         self.link_inheritance(all_file_data, imports_map)

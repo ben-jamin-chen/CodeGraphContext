@@ -2,6 +2,7 @@
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, List
 import logging
+import re
 from codegraphcontext.utils.debug_log import debug_log, info_logger, error_logger, warning_logger
 from codegraphcontext.utils.tree_sitter_manager import execute_query
 
@@ -241,6 +242,7 @@ class DartTreeSitterParser:
             imports = self._find_imports(root_node, source_code)
             function_calls = self._find_calls(root_node)
             variables = self._find_variables(root_node)
+            library_parts = self._parse_library_parts(source_code, path)
 
             return {
                 "path": str(path),
@@ -252,12 +254,31 @@ class DartTreeSitterParser:
                 "variables": variables,
                 "imports": imports,
                 "function_calls": function_calls,
+                "library_parts": library_parts,
                 "is_dependency": is_dependency,
                 "lang": self.language_name,
             }
         except Exception as e:
             error_logger(f"Failed to parse Dart file {path}: {e}")
             return {"path": str(path), "error": str(e)}
+
+    def _parse_library_parts(self, source_code: str, path: Path) -> List[Dict[str, str]]:
+        parts: List[Dict[str, str]] = []
+        part_match = re.search(r"^\s*part\s+['\"]([^'\"]+)['\"]\s*;", source_code, re.MULTILINE)
+        part_of_match = re.search(r"^\s*part\s+of\s+['\"]([^'\"]+)['\"]\s*;", source_code, re.MULTILINE)
+        if part_match:
+            parts.append({
+                "main_file": str(path),
+                "part_file": str((path.parent / part_match.group(1)).resolve()),
+                "direction": "part",
+            })
+        if part_of_match:
+            parts.append({
+                "main_file": str((path.parent / part_of_match.group(1)).resolve()),
+                "part_file": str(path.resolve()),
+                "direction": "part_of",
+            })
+        return parts
 
     def _find_types(self, root_node, query_key, label):
         found_types = []

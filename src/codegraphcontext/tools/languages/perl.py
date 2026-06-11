@@ -2,6 +2,7 @@
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, List
 import logging
+import re
 from codegraphcontext.utils.debug_log import debug_log, info_logger, error_logger, warning_logger
 from codegraphcontext.utils.tree_sitter_manager import execute_query
 
@@ -113,7 +114,7 @@ class PerlTreeSitterParser:
             root_node = tree.root_node
 
             functions = self._find_functions(root_node)
-            classes = self._find_classes(root_node)
+            classes = self._find_classes(root_node, source_code)
             imports = self._find_imports(root_node)
             function_calls = self._find_calls(root_node)
             variables = self._find_variables(root_node)
@@ -190,7 +191,7 @@ class PerlTreeSitterParser:
                 functions.append(func_data)
         return functions
 
-    def _find_classes(self, root_node):
+    def _find_classes(self, root_node, source_code: str = ""):
         classes = []
         query_str = PERL_QUERIES['classes']
         for node, capture_name in execute_query(self.language, query_str, root_node):
@@ -202,10 +203,33 @@ class PerlTreeSitterParser:
                 "name": name,
                 "line_number": node.start_point[0] + 1,
                 "end_line": node.end_point[0] + 1,
-                "bases": [], # Bases are often set via 'use base' or 'use parent'
+                "bases": [],
                 "lang": self.language_name,
                 "is_dependency": False,
             })
+
+        if source_code:
+            current_package = None
+            isa_re = re.compile(
+                r"^\s*our\s+@ISA\s*=\s*(?:qw\(([^)]+)\)|\(([^)]+)\))\s*;",
+                re.MULTILINE,
+            )
+            package_re = re.compile(r"^\s*package\s+([\w:]+)\s*;", re.MULTILINE)
+            package_bases: Dict[str, List[str]] = {}
+            for line in source_code.splitlines():
+                pkg_match = package_re.match(line)
+                if pkg_match:
+                    current_package = pkg_match.group(1)
+                    continue
+                isa_match = isa_re.match(line)
+                if isa_match and current_package:
+                    raw = isa_match.group(1) or isa_match.group(2) or ""
+                    package_bases[current_package] = [
+                        part.strip() for part in raw.split() if part.strip()
+                    ]
+            for cls in classes:
+                cls["bases"] = package_bases.get(cls["name"], [])
+
         return classes
 
     def _find_imports(self, root_node):
