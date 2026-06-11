@@ -14,7 +14,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 from rich import box
-from typing import Optional
+from typing import List, Optional
 import asyncio
 import logging
 import json
@@ -2016,7 +2016,7 @@ def add_package(
 
 @app.command()
 def watch(
-    path: str = typer.Argument(".", help="Path to the directory to watch. Defaults to current directory."),
+    paths: Optional[List[str]] = typer.Argument(None, help="Directories to watch. Defaults to the current directory."),
     context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
     poll: bool = typer.Option(
         False,
@@ -2033,23 +2033,24 @@ def watch(
     ),
 ):
     """
-    Watch a directory for file changes and automatically update the code graph.
-    
-    This command runs in the foreground and monitors the specified directory
+    Watch one or more directories for file changes and automatically update the code graph.
+
+    This command runs in the foreground and monitors the specified directories
     for any file changes. When changes are detected, the code graph is
     automatically updated.
-    
+
     The watcher will:
-    - Perform an initial scan if the directory is not yet indexed
+    - Perform an initial scan for any directory that is not yet indexed
     - Attach immediately for already-indexed directories unless --sync-on-start is passed
     - Monitor for file creation, modification, deletion, and moves
     - Automatically re-index affected files and update relationships
-    
+
     Press Ctrl+C to stop watching.
-    
+
     Examples:
         cgc watch .                    # Watch current directory
         cgc watch /path/to/project     # Watch specific directory
+        cgc watch /repo/a /repo/b      # Watch multiple directories
         cgc watch --poll .             # Use polling for Docker/NFS/SMB mounts
         cgc watch --sync-on-start .    # Reconcile current files before watching
         cgc w .                        # Using shortcut alias
@@ -2057,7 +2058,7 @@ def watch(
     Set CGC_WATCH_POLLING=1 to use polling without passing --poll.
     """
     _load_credentials()
-    watch_helper(path, context, use_polling=poll or None, sync_on_start=sync_on_start)
+    watch_helper(paths or ["."], context, use_polling=poll or None, sync_on_start=sync_on_start)
 
 @app.command()
 def unwatch(
@@ -3511,7 +3512,7 @@ def visualize_abbrev(
 
 @app.command("w", rich_help_panel="Shortcuts")
 def watch_abbrev(
-    path: str = typer.Argument(".", help="Path to watch"),
+    paths: Optional[List[str]] = typer.Argument(None, help="Directories to watch. Defaults to the current directory."),
     context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
     poll: bool = typer.Option(
         False,
@@ -3528,7 +3529,7 @@ def watch_abbrev(
     ),
 ):
     """Shortcut for 'cgc watch'"""
-    watch(path, context=context, poll=poll, sync_on_start=sync_on_start)
+    watch(paths, context=context, poll=poll, sync_on_start=sync_on_start)
 
 
 # ============================================================================
