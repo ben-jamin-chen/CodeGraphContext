@@ -853,7 +853,7 @@ def stats_helper(path: str = None, context: Optional[str] = None):
 def watch_helper(paths: Union[str, list[str]], context: Optional[str] = None, use_polling: Optional[bool] = None):
     """Watch one or more directories for changes and auto-update the graph (blocking mode)."""
     import logging
-    from ..core.watcher import CodeWatcher
+    from ..core.watcher import CodeWatcher, TRUE_ENV_VALUES
 
     # Suppress verbose watchdog DEBUG logs
     logging.getLogger('watchdog').setLevel(logging.WARNING)
@@ -927,11 +927,22 @@ def watch_helper(paths: Union[str, list[str]], context: Optional[str] = None, us
             console.print(f"[bold cyan]🔍 Watching {path_obj} for changes...[/bold cyan]")
 
             if _is_indexed(path_obj, indexed_repos):
-                console.print("[green]✓[/green] Already indexed. Synchronizing current files...")
+                # sync_on_start is intentionally NOT enabled here: synchronize_with_disk
+                # has no change detection — it deletes and re-parses every file in the
+                # repository, which on monorepo-scale watch targets means hours of full
+                # re-index on every watcher restart, with cross-file CALLS edges missing
+                # until the final relink. Opt in via CGC_WATCH_SYNC_ON_START=1 only for
+                # small repositories.
+                sync_on_start = (os.getenv("CGC_WATCH_SYNC_ON_START", "").strip().lower()
+                                 in TRUE_ENV_VALUES)
+                if sync_on_start:
+                    console.print("[green]✓[/green] Already indexed. Synchronizing current files...")
+                else:
+                    console.print("[green]✓[/green] Already indexed (no initial scan needed)")
                 watcher.watch_directory(
                     str(path_obj),
                     perform_initial_scan=False,
-                    sync_on_start=True,
+                    sync_on_start=sync_on_start,
                     cgcignore_path=ctx.cgcignore_path,
                 )
             else:
