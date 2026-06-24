@@ -383,6 +383,8 @@ def build_part_of_links(
 
 
 def _parse_decorator_name(dec_raw: str) -> str:
+    if not dec_raw:
+        return ""
     dec = dec_raw.strip()
     if dec.startswith("@"):
         dec = dec[1:]

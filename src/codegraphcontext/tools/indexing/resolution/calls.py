@@ -2190,7 +2190,7 @@ def build_function_call_groups(
         wildcard_imports = [
             imp["name"][:-2]
             for imp in file_data.get("imports", [])
-            if imp["name"].endswith(".*")
+            if imp.get("name") and imp["name"].endswith(".*")
         ]
         if wildcard_imports:
             local_imports["__wildcards__"] = wildcard_imports

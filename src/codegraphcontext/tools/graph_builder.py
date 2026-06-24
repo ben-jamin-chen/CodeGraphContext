@@ -669,8 +669,12 @@ class GraphBuilder:
                 index_summary=self.last_index_summary,
             )
         except Exception as e:
+            import traceback
             error_message = str(e)
-            error_logger(f"Failed to build graph for path {path}: {error_message}")
+            error_logger(
+                f"Failed to build graph for path {path}: {error_message}\n"
+                f"{traceback.format_exc()}"
+            )
             if job_id:
                 if (
                     "no such file found" in error_message
