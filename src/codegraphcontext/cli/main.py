@@ -37,6 +37,7 @@ from .cli_helpers import (
     visualize_helper,
     reindex_helper,
     update_helper,
+    sync_files_helper,
     clean_helper,
     stats_helper,
     _initialize_services,
@@ -1762,6 +1763,41 @@ def update(
     if path is None:
         path = str(Path.cwd())
     update_helper(path, context, quiet=quiet)
+
+@app.command()
+def sync(
+    paths: Optional[List[str]] = typer.Argument(None, help="File paths to re-sync into the graph."),
+    repo: Optional[str] = typer.Option(None, "--repo", help="Repository root the files belong to (inferred from indexed repos if omitted)."),
+    from_file: Optional[str] = typer.Option(None, "--from-file", help="Read newline-separated file paths from this file (added to any positional paths)."),
+    full_imports: bool = typer.Option(False, "--full-imports", help="Pre-scan imports across the whole repo for maximum cross-module accuracy (slower)."),
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="Reduce output when running from automation."),
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use (overrides mode/default)."),
+):
+    """
+    Incrementally re-sync specific changed files into the code graph.
+
+    Unlike `cgc index <file>` (which only MERGEs and leaves stale nodes behind),
+    `cgc sync` deletes each file's existing nodes/edges first, re-indexes it, and
+    re-links affected callers/inheritors -- the same incremental update the live
+    watcher performs, but as a one-shot suitable for Git hooks. Files that no
+    longer exist on disk are removed from the graph.
+    """
+    _load_credentials()
+    file_list: List[str] = list(paths or [])
+    if from_file:
+        ff = Path(from_file)
+        if ff.is_file():
+            file_list.extend(
+                line.strip()
+                for line in ff.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            )
+        else:
+            console.print(f"[yellow]--from-file not found: {from_file}[/yellow]")
+    if not file_list:
+        console.print("[yellow]No files to sync.[/yellow]")
+        return
+    sync_files_helper(file_list, repo=repo, context=context, quiet=quiet, full_imports=full_imports)
 
 @app.command()
 def clean(

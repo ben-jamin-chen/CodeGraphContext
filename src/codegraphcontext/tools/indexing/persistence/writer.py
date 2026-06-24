@@ -11,7 +11,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ....utils.debug_log import info_logger, warning_logger
 from ....utils.git_utils import get_repo_commit_hash
-from ..sanitize import sanitize_props, sanitize_props_with_secrets
+from ..sanitize import MAX_STR_LEN, sanitize_props, sanitize_props_with_secrets
 from ..schema_contract import NODE_LABELS
 from .utils import get_backend_type, execute_write_operation, execute_read_operation
 
@@ -309,12 +309,76 @@ class GraphWriter:
                 )
 
         execute_write_operation(self.driver, backend, _work)
+    def precreate_directory_tree(
+        self,
+        repo_path_str: str,
+        file_paths: List[str],
+    ) -> None:
+        """Create the full Directory tree (Repository->Dir->...->Dir CONTAINS chain)
+        in one serial, batched pass before parallel per-file writes.
+
+        Every per-file write would otherwise walk and MERGE this chain, and because
+        each walk touches the shared Repository node (and upper directories), and
+        Neo4j holds write locks until commit, concurrent file writers would serialize
+        on those nodes. Pre-creating the tree lets each parallel writer skip the chain
+        (see ``add_file_to_graph(skip_directory_tree=True)``) and only MERGE its own
+        File->parent-directory edge, which contends at most with siblings in the same
+        directory. Paths are constructed identically to ``add_file_to_graph`` so the
+        File->parent MATCH always resolves.
+        """
+        from collections import defaultdict
+
+        resolved_repo_str = _normalize_path(repo_path_str)
+        repo_path_obj = Path(resolved_repo_str)
+        seen: set = set()
+        rows_by_depth: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
+        for raw in file_paths:
+            file_path_str = _normalize_path(raw)
+            try:
+                relative_path_to_file = Path(file_path_str).relative_to(repo_path_obj)
+            except ValueError:
+                continue
+            parent_path = resolved_repo_str
+            for depth, part in enumerate(relative_path_to_file.parts[:-1]):
+                current_path_str = _normalize_path(Path(parent_path) / part)
+                if current_path_str not in seen:
+                    seen.add(current_path_str)
+                    rows_by_depth[depth].append(
+                        {"parent": parent_path, "path": current_path_str, "name": part}
+                    )
+                parent_path = current_path_str
+
+        if not rows_by_depth:
+            return
+
+        backend = get_backend_type(self.driver, self._db_manager)
+
+        def _work(session):
+            # Sequential per depth: a child's parent always lands in an earlier
+            # depth batch within this same transaction, so its MATCH resolves.
+            for depth in sorted(rows_by_depth):
+                rows = rows_by_depth[depth]
+                parent_label = "Repository" if depth == 0 else "Directory"
+                session.run(
+                    f"""
+                    UNWIND $batch AS row
+                    MATCH (p:{_cypher_label(parent_label, backend)} {{path: row.parent}})
+                    MERGE (d:Directory {{path: row.path}})
+                    SET d.name = row.name
+                    MERGE (p)-[:CONTAINS]->(d)
+                    """,
+                    batch=rows,
+                )
+
+        execute_write_operation(self.driver, backend, _work)
+
     def add_file_to_graph(
         self,
         file_data: Dict[str, Any],
         repo_name: str,
         imports_map: dict,
         repo_path_str: Optional[str] = None,
+        skip_directory_tree: bool = False,
     ) -> None:
         # Normalize: always store with forward slashes
         file_path_str = _normalize_path(file_data["path"])
@@ -384,22 +448,29 @@ class GraphWriter:
             for part in relative_path_to_file.parts[:-1]:
                 # Normalize directory paths too
                 current_path_str = _normalize_path(Path(parent_path) / part)
-                session.run(
-                    f"""
-                    MATCH (p:`{parent_label}` {{path: $parent_path}})
-                    MERGE (d:Directory {{path: $current_path}})
-                    SET d.name = $part
-                    MERGE (p)-[:CONTAINS]->(d)
-                """,
-                    parent_path=parent_path,
-                    current_path=current_path_str,
-                    part=part,
-                )
+                # When the directory tree is pre-created (parallel full-repo
+                # indexing), skip these per-file chain MERGEs: each touches the
+                # shared Repository / upper Directory nodes and, since Neo4j holds
+                # write locks until commit, would serialize concurrent file writers
+                # on those locks. parent_path still advances so the File->parent
+                # edge below stays correct.
+                if not skip_directory_tree:
+                    session.run(
+                        f"""
+                        MATCH (p:{_cypher_label(parent_label, backend)} {{path: $parent_path}})
+                        MERGE (d:Directory {{path: $current_path}})
+                        SET d.name = $part
+                        MERGE (p)-[:CONTAINS]->(d)
+                    """,
+                        parent_path=parent_path,
+                        current_path=current_path_str,
+                        part=part,
+                    )
                 parent_path = current_path_str
                 parent_label = "Directory"
             session.run(
                 f"""
-                MATCH (p:`{parent_label}` {{path: $parent_path}})
+                MATCH (p:{_cypher_label(parent_label, backend)} {{path: $parent_path}})
                 MATCH (f:File {{path: $path}})
                 MERGE (p)-[:CONTAINS]->(f)
             """,
@@ -709,6 +780,13 @@ class GraphWriter:
             for imp in file_data.get("imports", []):
                 if lang in {"javascript", "typescript", "tsx"}:
                     module_name = imp.get("source")
+                    if module_name and len(module_name) > MAX_STR_LEN:
+                        warning_logger(
+                            f"Skipping oversized import module name ({len(module_name)} chars) "
+                            f"in {file_path_str}; exceeds the Neo4j index key limit "
+                            f"(likely a minified or data file)."
+                        )
+                        module_name = None
                     if module_name:
                         js_imports.append(
                             {
@@ -731,6 +809,13 @@ class GraphWriter:
                             or imp.get("full_import_name")
                         )
                     if not module_name:
+                        continue
+                    if len(module_name) > MAX_STR_LEN:
+                        warning_logger(
+                            f"Skipping oversized import module name ({len(module_name)} chars) "
+                            f"in {file_path_str}; exceeds the Neo4j index key limit "
+                            f"(likely a minified or data file)."
+                        )
                         continue
                     full_import_name = (
                         imp.get("full_import_name")
@@ -1099,6 +1184,7 @@ class GraphWriter:
         if file_data.get("lang") != "c_sharp":
             return
 
+        backend = get_backend_type(self.driver, self._db_manager)
         caller_file_path = _normalize_path(file_data["path"])
 
         for type_list_name, type_label in [
@@ -1133,7 +1219,7 @@ class GraphWriter:
                             try:
                                 session.run(
                                     f"""
-                                    MATCH (child:`{clab}` {{name: $child_name, path: $path}})
+                                    MATCH (child:{_cypher_label(clab, backend)} {{name: $child_name, path: $path}})
                                     MATCH (iface:Interface {{name: $interface_name}})
                                     MERGE (child)-[:IMPLEMENTS]->(iface)
                                 """,
@@ -1153,8 +1239,8 @@ class GraphWriter:
                                 try:
                                     session.run(
                                         f"""
-                                        MATCH (child:`{clab}` {{name: $child_name, path: $path}})
-                                        MATCH (parent:`{plab}` {{name: $parent_name}})
+                                        MATCH (child:{_cypher_label(clab, backend)} {{name: $child_name, path: $path}})
+                                        MATCH (parent:{_cypher_label(plab, backend)} {{name: $parent_name}})
                                         MERGE (child)-[:INHERITS]->(parent)
                                     """,
                                         child_name=type_item["name"],

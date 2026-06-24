@@ -4,12 +4,13 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
-import os
+
 from ...core.jobs import JobManager, JobStatus
 from ...utils.debug_log import debug_log, error_logger, info_logger, warning_logger
 from .discovery import discover_files_to_index
@@ -48,6 +49,23 @@ def get_parallel_workers() -> int:
     except (TypeError, ValueError):
         return DEFAULT_PARALLEL_WORKERS
     return workers if workers > 0 else DEFAULT_PARALLEL_WORKERS
+
+
+def _resolve_write_concurrency(default: int = 8) -> int:
+    """Concurrency for the parallel graph node-write phase (env-overridable).
+
+    Override with ``CGC_WRITE_CONCURRENCY``; clamped to [1, 32]. Higher values
+    overlap more round-trip latency but increase lock contention on shared
+    Module nodes (hot imports), so 8 is a conservative default.
+    """
+    raw = os.environ.get("CGC_WRITE_CONCURRENCY")
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(value, 32))
 
 
 def build_index_summary(
@@ -171,62 +189,109 @@ async def run_tree_sitter_index_async(
 
     serialization_start = time.time()
 
-    # Parsing remains concurrent, but graph writes are ordered so shared nodes
-    # such as imported modules receive deterministic canonical metadata.
+    # ── Graph node-write phase (concurrent) ──────────────────────────────────
+    # The bulk of each file's write is file-scoped: Function/Class/etc. nodes are
+    # keyed by (name, path, line_number), so writers for different files never
+    # touch the same node and never contend. The one structure every file would
+    # otherwise share is the Directory tree (the chain up to the single Repository
+    # node); since Neo4j holds write locks until commit, leaving that in the
+    # per-file write would serialize all writers on the Repository lock. So we
+    # pre-create the whole directory tree once (serial, batched), then each
+    # parallel writer skips the chain and only links its File to its parent dir.
+    # Each write opens its own managed transaction (execute_write auto-retries the
+    # rare deadlock on a shared Module/Directory node) and every statement is an
+    # idempotent MERGE/SET, so retried transactions are safe. Files are still
+    # submitted in sorted path order so shared-Module coalesce() metadata is
+    # applied first-writer-wins under low contention.
+    sorted_file_data = sorted(all_file_data, key=lambda data: str(data.get("path") or ""))
+
+    writable_paths = [
+        str(fd.get("path"))
+        for fd in sorted_file_data
+        if "error" not in fd and fd.get("path")
+    ]
+    if writable_paths:
+        await asyncio.to_thread(
+            writer.precreate_directory_tree, resolved_repo_path_str, writable_paths
+        )
+
+    write_concurrency = _resolve_write_concurrency()
+    info_logger(
+        f"Writing {len(sorted_file_data)} files to graph (concurrency={write_concurrency})..."
+    )
+    write_semaphore = asyncio.Semaphore(write_concurrency)
+
     # One unwritable file must not abort the run. There is no transaction here,
-    # so an exception escaping this loop left a partially written graph with no
-    # rollback and every remaining file silently unindexed.
+    # so an exception escaping the write phase left a partially written graph
+    # with no rollback and every remaining file silently unindexed.
     write_failures: List[Dict[str, Any]] = []
-    for file_data in sorted(all_file_data, key=lambda data: str(data.get("path") or "")):
-        repo_path = Path(file_data.pop("_index_repo_path"))
-        try:
-            if "error" not in file_data:
-                await asyncio.to_thread(
-                    writer.add_file_to_graph,
-                    file_data,
-                    repo_name,
-                    imports_map,
-                    repo_path_str=resolved_repo_path_str,
-                )
-            elif not file_data.get("unsupported"):
-                await asyncio.to_thread(
-                    add_minimal_file_node,
-                    Path(file_data["path"]),
-                    repo_path,
-                    is_dependency,
-                )
-        except Exception as exc:  # noqa: BLE001 - keep indexing the other files
-            # Must not be named `path`: that is the function's repo-root Path
-            # parameter, still needed further down (`path.is_dir()`). Rebinding
-            # it to this file's path string turned a single recoverable write
-            # failure into an AttributeError that aborted the whole job.
-            failed_path = file_data.get("path")
-            # Retry once before giving up: writes are MERGE-idempotent, and a
-            # transient failure under runner load silently costs the graph the
-            # whole file's edges (observed as LadybugDB intermittently writing
-            # ~51 fewer CONTAINS edges in the parity run, #1612).
-            retried_ok = False
-            if "error" not in file_data:
-                try:
-                    await asyncio.sleep(0.2)
+
+    async def write_file_data(file_data: Dict[str, Any]) -> None:
+        async with write_semaphore:
+            repo_path = Path(file_data.pop("_index_repo_path"))
+            try:
+                if "error" not in file_data:
                     await asyncio.to_thread(
                         writer.add_file_to_graph,
                         file_data,
                         repo_name,
                         imports_map,
                         repo_path_str=resolved_repo_path_str,
+                        skip_directory_tree=True,
                     )
-                    retried_ok = True
-                    warning_logger(
-                        f"Write for {failed_path} succeeded on retry after: {exc}"
+                elif not file_data.get("unsupported"):
+                    await asyncio.to_thread(
+                        add_minimal_file_node,
+                        Path(file_data["path"]),
+                        repo_path,
+                        is_dependency,
                     )
-                except Exception as retry_exc:  # noqa: BLE001
-                    exc = retry_exc
-            if not retried_ok:
-                write_failures.append({"path": failed_path, "error": str(exc)})
-                error_logger(f"Failed to write {failed_path} to the graph: {exc}")
-                file_data["error"] = str(exc)
-                file_data["parse_failed"] = True
+            except Exception as exc:  # noqa: BLE001 - keep indexing the other files
+                # Must not be named `path`: that is the function's repo-root Path
+                # parameter, still needed further down (`path.is_dir()`). Rebinding
+                # it to this file's path string turned a single recoverable write
+                # failure into an AttributeError that aborted the whole job.
+                failed_path = file_data.get("path")
+                # Retry once before giving up: writes are MERGE-idempotent, and a
+                # transient failure under runner load silently costs the graph the
+                # whole file's edges (observed as LadybugDB intermittently writing
+                # ~51 fewer CONTAINS edges in the parity run, #1612).
+                retried_ok = False
+                if "error" not in file_data:
+                    try:
+                        await asyncio.sleep(0.2)
+                        await asyncio.to_thread(
+                            writer.add_file_to_graph,
+                            file_data,
+                            repo_name,
+                            imports_map,
+                            repo_path_str=resolved_repo_path_str,
+                            skip_directory_tree=True,
+                        )
+                        retried_ok = True
+                        warning_logger(
+                            f"Write for {failed_path} succeeded on retry after: {exc}"
+                        )
+                    except Exception as retry_exc:  # noqa: BLE001
+                        exc = retry_exc
+                if not retried_ok:
+                    write_failures.append({"path": failed_path, "error": str(exc)})
+                    error_logger(f"Failed to write {failed_path} to the graph: {exc}")
+                    file_data["error"] = str(exc)
+                    file_data["parse_failed"] = True
+
+    write_tasks = [write_file_data(fd) for fd in sorted_file_data]
+    written = 0
+    for coro in asyncio.as_completed(write_tasks):
+        await coro
+        written += 1
+        if written % 200 == 0:
+            info_logger(f"Wrote {written}/{len(write_tasks)} files to graph...")
+        if job_id and written % 100 == 0:
+            job_manager.update_job(
+                job_id,
+                status_message=f"Writing nodes: {written}/{len(write_tasks)} files",
+            )
 
     if write_failures:
         warning_logger(
@@ -303,10 +368,16 @@ async def run_tree_sitter_index_async(
     # C++ method definitions live in .cpp while the Class node lives in .h.
     # The per-file write cannot create these edges reliably due to ordering;
     # this single repo-scoped pass runs after every node is in the graph.
-    if job_id:
-        job_manager.update_job(job_id, status_message="Linking C++ class-function edges...")
-    info_logger("[CPP] Linking C++ out-of-line method definitions to their classes...")
-    writer.write_cpp_class_function_links(resolved_repo_path_str)
+    # Skip entirely when no C++ implementation files were parsed: the pass does
+    # three full :Function label scans (STARTS WITH + ENDS WITH, unindexed), which
+    # is pure waste on non-C++ repos. Gated on the same extensions the query uses.
+    _cpp_exts = (".cpp", ".cc", ".cxx", ".c++", ".C")
+    has_cpp_sources = any(str(fd.get("path", "")).endswith(_cpp_exts) for fd in all_file_data)
+    if has_cpp_sources:
+        if job_id:
+            job_manager.update_job(job_id, status_message="Linking C++ class-function edges...")
+        info_logger("[CPP] Linking C++ out-of-line method definitions to their classes...")
+        writer.write_cpp_class_function_links(resolved_repo_path_str)
 
     # ── Spring injection edges (#887) ─────────────────────────────────────────
     if job_id:

@@ -946,6 +946,120 @@ def update_helper(path: str, context: Optional[str] = None, quiet: bool = False)
     reindex_helper(path, context)
 
 
+def _infer_indexed_repo(code_finder, file_paths: List[str]) -> Optional[Path]:
+    """Return the indexed repository root that is an ancestor of the given files.
+
+    Picks the most specific (longest) matching repository path so nested repos
+    resolve correctly. Returns ``None`` when no indexed repo contains the files.
+    """
+    first = Path(file_paths[0]).resolve()
+    best: Optional[Path] = None
+    for repo in code_finder.list_indexed_repositories():
+        raw = repo.get("path")
+        if not raw:
+            continue
+        try:
+            rp = Path(raw).resolve()
+        except (TypeError, OSError, ValueError):
+            continue
+        if rp == first or rp in first.parents:
+            if best is None or len(str(rp)) > len(str(best)):
+                best = rp
+    return best
+
+
+def sync_files_helper(
+    file_paths: List[str],
+    repo: Optional[str] = None,
+    context: Optional[str] = None,
+    quiet: bool = False,
+    full_imports: bool = False,
+):
+    """Incrementally re-sync specific files into the graph (delete-then-add).
+
+    Unlike :func:`index_helper` (which only MERGEs and leaves stale nodes
+    behind), this removes each file's existing nodes/edges first, re-indexes it,
+    and re-links affected callers/inheritors -- the same incremental update the
+    live watcher performs (``RepositoryEventHandler._handle_modification``), but
+    as a one-shot suitable for Git hooks. Files that no longer exist on disk are
+    deleted from the graph.
+    """
+    from ..core.watcher import RepositoryEventHandler
+
+    if not file_paths:
+        console.print("[yellow]No files to sync.[/yellow]")
+        return
+
+    if quiet:
+        console.quiet = True
+    try:
+        anchor = Path(repo).resolve() if repo else Path(file_paths[0]).resolve().parent
+        services = _initialize_services(context, cwd=anchor)
+        if not all(services[:3]):
+            _fail_services_init()
+        db_manager, graph_builder, code_finder, ctx = services
+
+        try:
+            repo_path = (
+                Path(repo).resolve() if repo else _infer_indexed_repo(code_finder, file_paths)
+            )
+            if repo_path is None:
+                console.print(
+                    "[red]Could not determine the repository root for these files. "
+                    "Pass --repo <path>.[/red]"
+                )
+                raise typer.Exit(code=1)
+
+            # Idempotent; ensures the Repository node exists for the link passes.
+            graph_builder.add_repository_to_graph(repo_path, is_dependency=False)
+
+            handler = RepositoryEventHandler(
+                graph_builder,
+                repo_path,
+                perform_initial_scan=False,
+                cgcignore_path=ctx.cgcignore_path,
+            )
+
+            # Populate the imports map used for cross-file CALLS resolution.
+            # Default: scan only the changed files (fast, hook-friendly). With
+            # full_imports: scan the whole repo for maximum cross-module accuracy.
+            t0 = time.time()
+            if full_imports:
+                scan_files = handler._iter_supported_files()
+            else:
+                scan_files = [Path(p) for p in file_paths if Path(p).exists()]
+            handler.imports_map = graph_builder.pre_scan_imports(scan_files)
+            if not quiet:
+                scope = "repo-wide" if full_imports else "changed files"
+                console.print(
+                    f"[dim]Imports pre-scan: {len(scan_files)} files in "
+                    f"{time.time() - t0:.1f}s ({scope})[/dim]"
+                )
+
+            ok = 0
+            fail = 0
+            for raw in file_paths:
+                p = Path(raw).resolve()
+                try:
+                    handler._handle_modification(str(p))
+                    ok += 1
+                except Exception as e:
+                    fail += 1
+                    console.print(f"[red]✗ sync failed for {p}: {e}[/red]")
+
+            console.print(
+                f"[green]✓[/green] Synced {ok} file(s)"
+                + (f"; [red]{fail} failed[/red]" if fail else "")
+            )
+            if fail:
+                raise typer.Exit(code=1)
+        finally:
+            db_manager.close_driver()
+    finally:
+        if quiet:
+            console.quiet = False
+
+
 def clean_helper(context: Optional[str] = None):
     """Remove orphaned nodes and relationships from the database."""
     if not is_db_deletion_allowed():
