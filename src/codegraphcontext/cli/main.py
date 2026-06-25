@@ -90,9 +90,17 @@ app = typer.Typer(
 )
 console = Console(stderr=True)
 
-# Configure basic logging for the application. Default to WARNING so CLI
-# output stays clean; the root --debug flag switches this to DEBUG.
-logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(name)s - %(message)s')
+# Configure basic logging for the application. The root level honors
+# ENABLE_APP_LOGS so the app's INFO progress/timer lines actually surface when
+# requested; without this the root stays at WARNING and every info_logger call
+# is dropped regardless of ENABLE_APP_LOGS. Noisy third-party loggers stay
+# pinned by _configure_library_loggers. The root --debug flag still forces DEBUG.
+try:
+    _app_log_level_str = str(config_manager.get_config_value('ENABLE_APP_LOGS') or 'WARNING').upper()
+    _app_log_level = getattr(logging, _app_log_level_str, logging.WARNING)
+except Exception:
+    _app_log_level = logging.WARNING
+logging.basicConfig(level=_app_log_level, format='%(asctime)s - %(levelname)s - %(name)s - %(message)s')
 
 
 def get_version() -> str:
