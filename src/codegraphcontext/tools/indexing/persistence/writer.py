@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -14,6 +15,24 @@ from ....utils.git_utils import get_repo_commit_hash
 from ..sanitize import MAX_STR_LEN, sanitize_props, sanitize_props_with_secrets
 from ..schema_contract import NODE_LABELS
 from .utils import get_backend_type, execute_write_operation, execute_read_operation
+
+
+def _resolve_calls_write_concurrency(default: int = 8) -> int:
+    """Concurrency for the parallel CALLS edge-write phase (neo4j only).
+
+    Override with ``CGC_CALLS_WRITE_CONCURRENCY``; clamped to [1, 32]. Each worker
+    opens its own session (the driver is thread-safe, sessions are not); higher
+    values overlap more per-batch commit latency but increase deadlock-retry
+    contention on hot shared callee nodes, so 8 is a conservative default.
+    """
+    raw = os.environ.get("CGC_CALLS_WRITE_CONCURRENCY")
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(value, 32))
 
 
 def sort_import_rows_for_metadata(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -1033,149 +1052,230 @@ class GraphWriter:
                 tier_int = -1
             return "HEURISTIC_CALLS" if tier_int >= 8 else "CALLS"
 
-        with self.driver.session() as session:
+        def _run_call_batch(q: str, sub_batch: List[Dict[str, Any]]) -> None:
+            """Write one UNWIND batch in its own managed transaction/session.
+
+            Each call opens a fresh session so it is safe to run concurrently across
+            threads (the neo4j driver is thread-safe; a session is not). Managed
+            transactions roll back cleanly and retry on transient deadlocks, and the
+            edge MERGE is idempotent, so a retried batch never duplicates edges.
+            """
+            if not sub_batch:
+                return
+
+            def _batch_work(tx, _q=q, _b=sub_batch):
+                tx.run(_q, batch=_b)
+
+            try:
+                with self.driver.session() as session:
+                    if hasattr(session, "execute_write"):
+                        session.execute_write(_batch_work)
+                    elif hasattr(session, "write_transaction"):
+                        session.write_transaction(_batch_work)
+                    else:
+                        session.run(q, batch=sub_batch)
+            except Exception as e:
+                if _is_binder_exception(e):
+                    return
+                raise e
+
+        def _build_group_work_units(
+            batch_data: List[Dict[str, Any]], caller_label: str, called_label: str
+        ) -> Tuple[List[Tuple[str, List[Dict[str, Any]]]], int]:
+            """Sanitize + dedup one query group and slice it into (query, sub_batch) units."""
+            sanitized_batch = []
+            for row in batch_data:
+                if not isinstance(row, dict) or not row.get("caller_file_path") or not row.get("called_name"):
+                    continue
+
+                if row.get("called_line_number") is False or row.get("called_context") is False:
+                    continue
+
+                row = dict(row)
+                if "confidence" not in row or row["confidence"] is None:
+                    row["confidence"] = 0.0
+                if "resolution_tier" not in row or row["resolution_tier"] is None:
+                    row["resolution_tier"] = -1
+                if "confidence_label" not in row or row["confidence_label"] is None:
+                    row["confidence_label"] = "EXTRACTED"
+
+                val = row.get("called_line_number")
+                if "called_line_number" not in row or not isinstance(val, int):
+                    try:
+                        row["called_line_number"] = int(val or 0)
+                    except (ValueError, TypeError):
+                        row["called_line_number"] = 0
+
+                if "called_context" not in row or row["called_context"] is None:
+                    row["called_context"] = ""
+                if "line_number" not in row or row["line_number"] is None:
+                    row["line_number"] = 0
+
+                import json as _json
+                raw_args = row.get("args") or []
+                if isinstance(raw_args, list):
+                    row["args_key"] = _json.dumps(raw_args, sort_keys=False)
+                else:
+                    row["args_key"] = str(raw_args)
+
+                sanitized_batch.append(row)
+
+            if not sanitized_batch:
+                return [], 0
+
+            seen_calls: set = set()
+            unique_calls: List[Dict[str, Any]] = []
+            for row in sanitized_batch:
+                dedup_key = (
+                    row.get("caller_name", ""),
+                    row.get("caller_file_path", ""),
+                    row.get("caller_line_number", 0),
+                    row.get("called_name", ""),
+                    row.get("called_file_path", ""),
+                    row.get("called_line_number", 0),
+                    row.get("called_context", ""),
+                    row.get("line_number", 0),
+                    row.get("full_call_name", ""),
+                    row.get("args_key", ""),
+                )
+                if dedup_key not in seen_calls:
+                    seen_calls.add(dedup_key)
+                    unique_calls.append(row)
+            sanitized_batch = unique_calls
+
+            precise_batch = []
+            heuristic_batch = []
+            for row in sanitized_batch:
+                if relationship_label_for_row(row) == "HEURISTIC_CALLS":
+                    heuristic_batch.append(row)
+                else:
+                    precise_batch.append(row)
+
+            # The label-aware helper matches context, class_context or
+            # module_context depending on what the label's parsers emit —
+            # the inline context-only predicate silently dropped Rust
+            # module-scoped calls whose functions carry only
+            # module_context (#1510).
+            called_context_clause = _called_context_clause(called_label)
+
+            # ...and which have a 'line_number'. File and Directory do not:
+            # the Kùzu File table is (path, name, relative_path, package_name,
+            # is_dependency). Referencing called.line_number against them raises
+            # a binder exception on strongly-typed backends, which the caller
+            # swallows via _is_binder_exception -> continue, silently dropping
+            # the ENTIRE Function->File batch. Neo4j is untyped here and
+            # evaluates the predicate to null, so it kept those edges — which is
+            # why dynamic-import edges existed on Neo4j and nowhere else.
+            labels_without_line_number = {"File", "Directory"}
+            predicates = []
+            if called_label not in labels_without_line_number:
+                predicates.append(
+                    "(row.called_line_number <= 0 OR called.line_number = row.called_line_number)"
+                )
+            if called_context_clause:
+                predicates.append(called_context_clause.removeprefix("AND ").strip())
+            where_clause = ("WHERE " + "\n                          AND ".join(predicates)) if predicates else ""
+
+            caller_match = (
+                f"MATCH (caller:File {{path: row.caller_file_path}})"
+                if caller_label == "File"
+                else f"MATCH (caller:{caller_label} {{name: row.caller_name, path: row.caller_file_path, line_number: row.caller_line_number}})"
+            )
+            set_clause = """
+                        SET call.args = row.args
+                        SET call.confidence = row.confidence
+                        SET call.resolution_tier = row.resolution_tier
+                        SET call.confidence_label = row.confidence_label"""
+
+            def _query_for(relation_label: str) -> str:
+                merge_clause = f"MERGE (caller)-[call:{relation_label} {{line_number: row.line_number, full_call_name: row.full_call_name, args_key: row.args_key}}]->(called)"
+                if called_label == "Parameter":
+                    # Parameter nodes are keyed by function_line_number, not
+                    # line_number; the generic line predicate would evaluate to
+                    # null against them and silently drop every edge.
+                    return f"""
+                        UNWIND $batch AS row
+                        {caller_match}
+                        MATCH (called:Parameter {{name: row.called_name, path: row.called_file_path, function_line_number: row.called_line_number}})
+                        {merge_clause}{set_clause}
+                    """
+                return f"""
+                        UNWIND $batch AS row
+                        {caller_match}
+                        MATCH (called:{called_label} {{name: row.called_name, path: row.called_file_path}})
+                        {where_clause}
+                        {merge_clause}{set_clause}
+                    """
+
+            total = len(sanitized_batch)
+            work_units: List[Tuple[str, List[Dict[str, Any]]]] = []
+            for batch_rows, relation_label in (
+                (precise_batch, "CALLS"),
+                (heuristic_batch, "HEURISTIC_CALLS"),
+            ):
+                if not batch_rows:
+                    continue
+                q = _query_for(relation_label)
+                for i in range(0, len(batch_rows), batch_size):
+                    work_units.append((q, batch_rows[i : i + batch_size]))
+
+            return work_units, total
+
+        # CALLS edge-writes are latency-bound: each batch commits (fsync) before the
+        # next starts, so a serial pass spends most of its time waiting. For neo4j, fan
+        # the per-batch managed-tx writes across a bounded thread pool (one session per
+        # worker). MERGE on deduped edges contends only on shared callee nodes, where
+        # deadlocks are retried transparently. Other backends keep the serial pass.
+        parallel = backend == "neo4j"
+        max_workers = _resolve_calls_write_concurrency() if parallel else 1
+        info_logger(
+            f"[CALLS] write concurrency={max_workers}"
+            + (" (parallel sessions)" if parallel else " (serial)")
+        )
+
+        executor = (
+            ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="cgc-calls-writer")
+            if parallel
+            else None
+        )
+        try:
             for batch_data, caller_label, called_label in queries:
                 if not batch_data:
                     continue
-
-                sanitized_batch = []
-                for row in batch_data:
-                    if not isinstance(row, dict) or not row.get("caller_file_path") or not row.get("called_name"):
-                        continue
-
-                    if row.get("called_line_number") is False or row.get("called_context") is False:
-                        continue
-
-                    row = dict(row)
-                    if "confidence" not in row or row["confidence"] is None:
-                        row["confidence"] = 0.0
-                    if "resolution_tier" not in row or row["resolution_tier"] is None:
-                        row["resolution_tier"] = -1
-                    if "confidence_label" not in row or row["confidence_label"] is None:
-                        row["confidence_label"] = "EXTRACTED"
-
-                    val = row.get("called_line_number")
-                    if "called_line_number" not in row or not isinstance(val, int):
-                        try:
-                            row["called_line_number"] = int(val or 0)
-                        except (ValueError, TypeError):
-                            row["called_line_number"] = 0
-
-                    if "called_context" not in row or row["called_context"] is None:
-                        row["called_context"] = ""
-                    if "line_number" not in row or row["line_number"] is None:
-                        row["line_number"] = 0
-
-                    import json as _json
-                    raw_args = row.get("args") or []
-                    if isinstance(raw_args, list):
-                        row["args_key"] = _json.dumps(raw_args, sort_keys=False)
-                    else:
-                        row["args_key"] = str(raw_args)
-
-                    sanitized_batch.append(row)
-
-                if not sanitized_batch:
+                work_units, total = _build_group_work_units(batch_data, caller_label, called_label)
+                if not work_units:
                     continue
 
-                seen_calls: set = set()
-                unique_calls: List[Dict[str, Any]] = []
-                for row in sanitized_batch:
-                    dedup_key = (
-                        row.get("caller_name", ""),
-                        row.get("caller_file_path", ""),
-                        row.get("caller_line_number", 0),
-                        row.get("called_name", ""),
-                        row.get("called_file_path", ""),
-                        row.get("called_line_number", 0),
-                        row.get("called_context", ""),
-                        row.get("line_number", 0),
-                        row.get("full_call_name", ""),
-                        row.get("args_key", ""),
-                    )
-                    if dedup_key not in seen_calls:
-                        seen_calls.add(dedup_key)
-                        unique_calls.append(row)
-                sanitized_batch = unique_calls
+                t0 = time.time()
+                nfut = len(work_units)
+                if parallel:
+                    futures = [executor.submit(_run_call_batch, q, b) for q, b in work_units]
+                    done = 0
+                    for fut in as_completed(futures):
+                        fut.result()
+                        done += 1
+                        if done % 25 == 0 or done == nfut:
+                            info_logger(
+                                f"[CALLS] {caller_label}-to-{called_label}: "
+                                f"{done}/{nfut} batches written ({time.time()-t0:.1f}s elapsed)"
+                            )
+                else:
+                    for i, (q, b) in enumerate(work_units, 1):
+                        _run_call_batch(q, b)
+                        if i % 25 == 0 or i == nfut:
+                            info_logger(
+                                f"[CALLS] {caller_label}-to-{called_label}: "
+                                f"{i}/{nfut} batches written ({time.time()-t0:.1f}s elapsed)"
+                            )
 
-                precise_batch = []
-                heuristic_batch = []
-                for row in sanitized_batch:
-                    if relationship_label_for_row(row) == "HEURISTIC_CALLS":
-                        heuristic_batch.append(row)
-                    else:
-                        precise_batch.append(row)
-
-                # Define which labels have a 'context' property in the schema
-                # The label-aware helper matches context, class_context or
-                # module_context depending on what the label's parsers emit —
-                # the inline context-only predicate silently dropped Rust
-                # module-scoped calls whose functions carry only
-                # module_context (#1510).
-                called_context_clause = _called_context_clause(called_label)
-
-                # ...and which have a 'line_number'. File and Directory do not:
-                # the Kùzu File table is (path, name, relative_path, package_name,
-                # is_dependency). Referencing called.line_number against them raises
-                # a binder exception on strongly-typed backends, which the caller
-                # swallows via _is_binder_exception -> continue, silently dropping
-                # the ENTIRE Function->File batch. Neo4j is untyped here and
-                # evaluates the predicate to null, so it kept those edges — which is
-                # why dynamic-import edges existed on Neo4j and nowhere else.
-                labels_without_line_number = {"File", "Directory"}
-                predicates = []
-                if called_label not in labels_without_line_number:
-                    predicates.append(
-                        "(row.called_line_number <= 0 OR called.line_number = row.called_line_number)"
-                    )
-                if called_context_clause:
-                    predicates.append(called_context_clause.removeprefix("AND ").strip())
-                where_clause = ("WHERE " + "\n                              AND ".join(predicates)) if predicates else ""
-
-                def _write_batch(batch_rows: List[Dict[str, Any]], relation_label: str) -> None:
-                    if not batch_rows:
-                        return
-                    if caller_label == "File":
-                        q = f"""
-                            UNWIND $batch AS row
-                            MATCH (caller:File {{path: row.caller_file_path}})
-                            MATCH (called:{called_label} {{name: row.called_name, path: row.called_file_path}})
-                            {where_clause}
-                            MERGE (caller)-[call:{relation_label} {{line_number: row.line_number, full_call_name: row.full_call_name, args_key: row.args_key}}]->(called)
-                            SET call.args = row.args
-                            SET call.confidence = row.confidence
-                            SET call.resolution_tier = row.resolution_tier
-                            SET call.confidence_label = row.confidence_label
-                        """
-                    else:
-                        q = f"""
-                            UNWIND $batch AS row
-                            MATCH (caller:{caller_label} {{name: row.caller_name, path: row.caller_file_path, line_number: row.caller_line_number}})
-                            MATCH (called:{called_label} {{name: row.called_name, path: row.called_file_path}})
-                            {where_clause}
-                            MERGE (caller)-[call:{relation_label} {{line_number: row.line_number, full_call_name: row.full_call_name, args_key: row.args_key}}]->(called)
-                            SET call.args = row.args
-                            SET call.confidence = row.confidence
-                            SET call.resolution_tier = row.resolution_tier
-                            SET call.confidence_label = row.confidence_label
-                        """
-
-                    t0 = time.time()
-                    for i in range(0, len(batch_rows), batch_size):
-                        batch = batch_rows[i : i + batch_size]
-                        try:
-                            session.run(q, batch=batch)
-                        except Exception as e:
-                            if _is_binder_exception(e):
-                                continue
-                            raise e
-                    info_logger(
-                        f"[{relation_label}] {caller_label}-to-{called_label}: {len(batch_rows)} edges written in {time.time()-t0:.1f}s"
-                    )
-
-                _write_batch(precise_batch, "CALLS")
-                _write_batch(heuristic_batch, "HEURISTIC_CALLS")
-
+                info_logger(
+                    f"[CALLS] {caller_label}-to-{called_label}: {total} edges written in {time.time()-t0:.1f}s"
+                )
+        finally:
+            if executor is not None:
+                # cancel_futures: on a hard failure, drop queued batches instead of
+                # running every remaining unit against a database that just errored.
+                executor.shutdown(wait=True, cancel_futures=True)
         info_logger("[CALLS] All relationships processed.")
 
     def _create_csharp_inheritance_and_interfaces(
