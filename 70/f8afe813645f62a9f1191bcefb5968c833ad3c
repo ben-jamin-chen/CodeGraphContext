@@ -1,0 +1,21 @@
+src/codegraphcontext/core/cgcignore.py
+  s_474af01d8aa697::t_56fc895f050769 166
+src/codegraphcontext/tools/indexing/persistence/writer.py
+  s_474af01d8aa697::t_5db82636e1fe06 8,20-37,813-814,816-822,824-825,827-832,834-846,849-850,852-858,860-897,899-911,916-952,954-997,999-1000,1002,1004-1014,1016-1027,1029-1049,1051-1058
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "70f8afe813645f62a9f1191bcefb5968c833ad3c",
+  "prompts": {},
+  "sessions": {
+    "s_474af01d8aa697": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "841f9869-6be4-4b96-ad96-d8d55ab10455",
+        "model": "claude-fable-5"
+      },
+      "human_author": "ben-jamin-chen <benjamin_chen@outlook.com>"
+    }
+  }
+}
