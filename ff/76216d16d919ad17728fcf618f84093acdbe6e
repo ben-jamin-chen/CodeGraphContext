@@ -1,0 +1,19 @@
+.claude/skills/resync-upstream/SKILL.md
+  s_474af01d8aa697::t_471e583fe69cd5 25,29-32,34,36,103-108,145-153,161
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "ff76216d16d919ad17728fcf618f84093acdbe6e",
+  "prompts": {},
+  "sessions": {
+    "s_474af01d8aa697": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "841f9869-6be4-4b96-ad96-d8d55ab10455",
+        "model": "unknown"
+      },
+      "human_author": "ben-jamin-chen <benjamin_chen@outlook.com>"
+    }
+  }
+}
