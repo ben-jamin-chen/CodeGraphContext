@@ -1,0 +1,19 @@
+src/codegraphcontext/tools/indexing/persistence/writer.py
+  s_474af01d8aa697::t_5db82636e1fe06 8,20-37,1055-1056,1058-1064,1066-1067,1069-1074,1076-1100,1102-1153,1160-1208,1210-1216,1218-1234,1236-1247,1249-1269,1271-1278
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.18",
+  "base_commit_sha": "28bd970111f19a273550f3085bc58c66cd43cfb6",
+  "prompts": {},
+  "sessions": {
+    "s_474af01d8aa697": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "841f9869-6be4-4b96-ad96-d8d55ab10455",
+        "model": "claude-fable-5"
+      },
+      "human_author": "ben-jamin-chen <benjamin_chen@outlook.com>"
+    }
+  }
+}
