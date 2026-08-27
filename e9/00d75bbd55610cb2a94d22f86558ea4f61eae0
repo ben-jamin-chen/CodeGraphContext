@@ -1,0 +1,19 @@
+src/codegraphcontext/cli/main.py
+  s_474af01d8aa697::t_3bc7742c4514a1 93-103
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "e900d75bbd55610cb2a94d22f86558ea4f61eae0",
+  "prompts": {},
+  "sessions": {
+    "s_474af01d8aa697": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "841f9869-6be4-4b96-ad96-d8d55ab10455",
+        "model": "claude-fable-5"
+      },
+      "human_author": "ben-jamin-chen <benjamin_chen@outlook.com>"
+    }
+  }
+}
